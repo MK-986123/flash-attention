@@ -23,30 +23,60 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          # Standard pip cache location for Windows
+          path: C:\Users\runneradmin\AppData\Local\pip\Cache
+          # Key includes OS, Python version, and hash of setup.py for dependency changes
+          key: ${{ runner.os }}-py${{ matrix.python-version }}-pip-${{ hashFiles('setup.py') }}
+          restore-keys: |
+            ${{ runner.os }}-py${{ matrix.python-version }}-pip-
+
+      - name: Install CUDA Toolkit
+        # Installs CUDA 12.8 and verifies installation
+        # Note: Ensure choco version '12.8' is correct/available
+        run: |
+          choco install cuda --version=12.8
+          & "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin\nvcc.exe" --version || exit 1
+        shell: powershell
+
+      # Removed the incompatible GPU check step for standard GitHub runners
+
       - name: Install dependencies including build tool
-        # Install torch first, then let pip find compatible torchvision/torchaudio
-        # Note: Assumes torch 2.7.0 with CUDA 12.8 exists with '+cu128' suffix
+        # Installs dependencies and ensures compatibility
         run: |
           python -m pip install --upgrade pip
-          pip install build # Added build tool
+          pip install build
           pip install torch==2.7.0+cu128 --index-url https://download.pytorch.org/whl/cu128
           pip install torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-        shell: bash
+          pip install pytest pytest-xdist
+        shell: powershell
 
       - name: Build wheel
-        run: python -m build --wheel # Added step to build the wheel
-        shell: bash
+        # Builds the wheel package with no isolation to use existing environment
+        run: python -m build --wheel --no-isolation
+        shell: powershell
 
-      - name: Install package for testing
-        run: python setup.py install # Kept install step for testing context
-        shell: bash
+      - name: Verify Wheel
+        # Verifies the integrity of the built wheel
+        run: python -m pip install dist/*.whl
+        shell: powershell
 
       - name: Run tests
-        run: pytest # Kept test step
-        shell: bash
+        # Runs tests with pytest and utilizes parallel execution
+        run: pytest -n auto
+        shell: powershell
+
+      - name: Show Logs on Failure
+        # Displays logs from the dist directory if the job fails (if logs are generated there)
+        if: failure()
+        run: dir dist\*.log
+        shell: powershell
 
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v4 # Added step to upload the built wheel
+        # Uploads the built wheel as an artifact
+        uses: actions/upload-artifact@v4
         with:
           name: python-wheel-${{ matrix.python-version }}-${{ runner.os }}
-          path: dist/*.whl # Uploads the wheel file(s) from the dist directory
+          path: dist/*.whl
