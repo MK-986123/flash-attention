@@ -1,0 +1,39 @@
+name: Build and Test Windows CUDA
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest # Use windows-latest OS
+
+    strategy:
+      matrix:
+        python-version: ['3.12'] # Use Python 3.12
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        # Note: Assumes torch 2.7.0 with CUDA 12.8 exists with '+cu128' suffix
+        # The specific torchvision/torchaudio versions might need adjustment for torch 2.7.0
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch==2.7.0+cu128 torchvision==0.15.0+cu128 torchaudio==0.15.0+cu128 --index-url https://download.pytorch.org/whl/cu128
+          pip install -r requirements.txt
+        shell: bash
+
+      - name: Build and test
+        run: |
+          python setup.py install
+          pytest
+        shell: bash
