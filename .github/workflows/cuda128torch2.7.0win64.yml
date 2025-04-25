@@ -3,161 +3,73 @@ name: Build Windows wheels and upload to GitHub Releases
 on:
   create:
     tags:
-      - "v*" # Trigger on tag creation like vX.Y.Z
+      - "v*"
 
 jobs:
   build_windows_wheels:
-    # Job name includes matrix variables for easier identification in UI
-    name: Build wheel py${{ matrix.python-version }} torch${{ matrix.torch-version }} cuda${{ matrix.cuda-version }} on Windows
-    runs-on: windows-2022 # Specify Windows runner
+    name: Build wheels on Windows
+    runs-on: windows-2022
     strategy:
-      fail-fast: false # Allow other matrix jobs to continue if one fails
+      fail-fast: false
       matrix:
-        # Define the build matrix combinations
         torch-version: ["2.6.0", "2.7.0", "2.8.0"]
         python-version: ["3.12"]
-        cuda-version: ["12.8"] # Target specific CUDA version
+        cuda-version: ["12.8"]
 
     steps:
-      - name: Checkout repository
+      - name: Checkout source
         uses: actions/checkout@v4
-        with:
-          # Optional: Checkout submodules if flash-attention requires them
-          # submodules: recursive
-          # Optional: Fetch all history for git describe/versioning if needed
-          # fetch-depth: 0
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install CUDA ${{ matrix.cuda-version }} using recommended action
-        # Uses an action designed for installing CUDA in GHA, handles paths
-        uses: Jimver/cuda-toolkit@v0.2.11 # Check for latest compatible version
-        id: cuda-toolkit
+      - name: Install CUDA Toolkit via Jimver
+        uses: Jimver/cuda-toolkit@v0.2.11
         with:
           cuda: ${{ matrix.cuda-version }}
+          method: "network"
+          sub-packages: '["nvcc", "cudart", "cublas", "curand", "cusparse"]'
 
-      - name: Verify CUDA Installation
+      - name: Add CUDA to environment
         run: |
-          echo "Verifying nvcc version:"
-          nvcc --version
-          echo "CUDA_PATH: $env:CUDA_PATH"
-          echo "CUDA_HOME: $env:CUDA_HOME"
-        shell: powershell
+          echo "CUDA_PATH=${{ env.CUDA_PATH }}" >> $GITHUB_ENV
+          echo "CUDA_HOME=${{ env.CUDA_PATH }}" >> $GITHUB_ENV
+          echo "$env:CUDA_PATH\\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: Install Python build dependencies
-        run: python -m pip install --upgrade pip setuptools wheel packaging ninja cmake
-        # Can use default shell (powershell) or specify bash
-        shell: powershell
-
-      - name: Set PyTorch CUDA compatibility version string
-        id: set_torch_cuda_version
+      - name: Install dependencies
         run: |
-          # PyTorch usually provides wheels compatible with major CUDA versions.
-          # For CUDA 12.x, 'cu121' is the common suffix for downloadable wheels.
-          # Verify this against the official PyTorch website if issues arise.
-          $torchCudaSuffix = "cu121"
-          echo "TORCH_CUDA_SUFFIX=$torchCudaSuffix" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Using PyTorch CUDA suffix: $torchCudaSuffix"
+          pip install --upgrade pip setuptools wheel packaging ninja cmake
 
-          # Prepare short versions for potential use in filenames
-          $torchVersionShort = "${{ matrix.torch-version }}".Split('.')[0..1] -join '.'
-          $cudaVersionShort = "${{ matrix.cuda-version }}".Replace(".", "")
-          echo "TORCH_VERSION_SHORT=$torchVersionShort" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          echo "CUDA_VERSION_SHORT=$cudaVersionShort" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-        shell: powershell
-
-      - name: Install PyTorch ${{ matrix.torch-version }} for CUDA ${{ steps.set_torch_cuda_version.outputs.TORCH_CUDA_SUFFIX }}
+      - name: Install PyTorch ${{ matrix.torch-version }}+cu128
         run: |
-          # Install PyTorch using the determined compatible wheel index
-          python -m pip install torch==${{ matrix.torch-version }} --index-url https://download.pytorch.org/whl/${{ steps.set_torch_cuda_version.outputs.TORCH_CUDA_SUFFIX }} --no-cache-dir
-          echo "Verifying PyTorch installation:"
-          # Verify torch version, CUDA linkage, and GPU availability
-          python -c "import torch; print(f'Torch Version: {torch.__version__}'); print(f'Torch CUDA Version: {torch.version.cuda}'); print(f'CUDA Available: {torch.cuda.is_available()}'); print(f'CUDA Device Name: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'N/A'}')"
-        shell: powershell # Use powershell for consistency
+          pip install --index-url https://download.pytorch.org/whl/cu128 torch==${{ matrix.torch-version }}
+          python -c "import torch; print('Torch:', torch.__version__, 'CUDA:', torch.version.cuda)"
 
-      - name: Clone flash-attention repo and checkout tag
+      - name: Clone flash-attention repo
         run: |
-          # Clone into a specific directory to avoid conflicts
           git clone https://github.com/Dao-AILab/flash-attention.git flash-attn
           cd flash-attn
-          echo "Checking out tag: ${{ github.ref_name }}"
-          # github.ref_name contains the tag name (e.g., v2.5.8) that triggered the workflow
-          git checkout ${{ github.ref_name }}
-        shell: bash # Git commands work well in bash
+          git checkout v${{ github.ref_name }}
 
-      - name: Build flash-attention wheel
-        # Set the working directory for the build commands
+      - name: Build wheel
         working-directory: flash-attn
         run: |
-          # Set environment variables for the build using PowerShell syntax
-          $env:FLASH_ATTENTION_FORCE_BUILD = 'TRUE'
-          # Optional: Utilize multiple cores for compilation if supported
-          $env:MAX_JOBS = $env:NUMBER_OF_PROCESSORS
-          Write-Host "Starting flash-attention build with MAX_JOBS=$env:MAX_JOBS..."
-
-          # Execute the build command
+          $env:FLASH_ATTENTION_FORCE_BUILD = "TRUE"
           python setup.py bdist_wheel --dist-dir=dist
+          dir dist
 
-          Write-Host "Build command finished. Listing contents of dist directory:"
-          # List the output directory contents using PowerShell
-          Get-ChildItem -Path .\dist\
-        # Explicitly use PowerShell for variable setting and commands
-        shell: powershell
-
-      - name: Rename wheel for clarity (optional but recommended)
-        # This step makes the uploaded filename more informative
-        id: rename_wheel
-        working-directory: flash-attn # Ensure we are in the correct directory
+      - name: Validate wheel build
         run: |
-          $wheelFile = Get-ChildItem -Path .\dist\*.whl | Select-Object -First 1
-          if ($wheelFile) {
-            # Extract flash-attn version from the tag (strip 'v')
-            $flashAttnVersion = "${{ github.ref_name }}".TrimStart("v")
-            # Construct Python tag (e.g., cp312)
-            $pythonTag = "cp${{ matrix.python-version }}".Replace(".", "")
-            # Construct new filename incorporating versions
-            # Example: flash_attn-2.5.8+cu121torch2.8-cp312-cp312-win_amd64.whl
-            $newWheelName = $wheelFile.Name -replace "$flashAttnVersion", "${flashAttnVersion}+${{ steps.set_torch_cuda_version.outputs.TORCH_CUDA_SUFFIX }}torch${{ env.TORCH_VERSION_SHORT }}" `
-                                          -replace "py3-none-any", "<span class="math-inline">\{pythonTag\}\-</span>{pythonTag}-win_amd64" `
-                                          -replace "cp\d+-cp\d+-win_amd64", "<span class="math-inline">\{pythonTag\}\-</span>{pythonTag}-win_amd64" # Replace generic or existing platform tag
-
-            # Ensure the final platform tag part is correct, handling potential variations
-            if (<span class="math-inline">newWheelName \-notmatch "\-win\_amd64\.whl</span>") {
-                $newWheelName = <span class="math-inline">newWheelName \-replace "\.whl</span>", "-${pythonTag}-win_amd64.whl"
-            }
-
-            $newPath = Join-Path -Path $wheelFile.DirectoryName -ChildPath $newWheelName
-            Move-Item -Path $wheelFile.FullName -Destination $newPath
-            Write-Host "Renamed wheel to: $newWheelName"
-            # Set outputs for the upload step
-            echo "wheel_path=$newPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            echo "wheel_name=$newWheelName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          } else {
-            Write-Error "Could not find wheel file (*.whl) in dist directory after build!"
+          if (-Not (Test-Path "flash-attn\\dist\\*.whl")) {
+            Write-Error "❌ No wheel was built."
             exit 1
           }
-        shell: powershell
 
-      - name: Validate wheel build and existence (redundant if rename step works, good safeguard)
-        # This step ensures a wheel file exists before attempting upload
-        run: |
-          <span class="math-inline">wheelPath \= "</span>{{ steps.rename_wheel.outputs.wheel_path }}"
-          # Check if the variable is set AND the file exists
-          if (-not [string]::IsNullOrEmpty($wheelPath) -and (Test-Path -Path $wheelPath -PathType Leaf)) {
-             Write-Host "✅ Wheel file found at: $wheelPath"
-          } else {
-             # Check the original dist path as a fallback diagnostic
-             $originalDistPath = "flash-attn\dist\*.whl"
-             if (Test-Path -Path $originalDistPath -PathType Leaf) {
-                Write-Error "❌ Wheel found in dist, but renaming step failed or did not output path correctly."
-             } else {
-                Write-Error "❌ Wheel build failed or wheel file (*.whl) not found in expected location (flash-attn\dist)."
-             }
-             exit 1
-          }
-        shell: powershell
-
-      - name: Upload wheel
+      - name: Upload wheel to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: flash-attn/dist/*.whl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
