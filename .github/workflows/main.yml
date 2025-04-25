@@ -1,0 +1,77 @@
+name: Build Windows wheels and upload to GitHub Releases
+
+on:
+  create:
+    tags:
+      - "v*"
+
+jobs:
+  build_windows_wheels:
+    name: Build wheels on Windows
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        torch-version: ["2.6.0", "2.7.0", "2.8.0"]
+        python-version: ["3.12"]
+        cuda-version: ["12.8"]
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install CUDA Toolkit via Jimver
+        uses: Jimver/cuda-toolkit@v0.2.11
+        with:
+          cuda: ${{ matrix.cuda-version }}
+          method: "network"
+          sub-packages: '["nvcc", "cudart", "cublas", "curand", "cusparse"]'
+
+      - name: Add CUDA to environment
+        run: |
+          echo "CUDA_PATH=${{ env.CUDA_PATH }}" >> $GITHUB_ENV
+          echo "CUDA_HOME=${{ env.CUDA_PATH }}" >> $GITHUB_ENV
+          echo "$env:CUDA_PATH\\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel packaging ninja cmake
+
+      - name: Install PyTorch ${{ matrix.torch-version }}+cu128
+        run: |
+          python -m pip install --index-url https://download.pytorch.org/whl/cu128 torch==${{ matrix.torch-version }}
+          python -c "import torch; print('Torch:', torch.__version__, 'CUDA:', torch.version.cuda)"
+
+      - name: Clone flash-attention repo
+        run: |
+          git clone https://github.com/Dao-AILab/flash-attention.git flash-attn
+          cd flash-attn
+          git checkout v${{ github.ref_name }}
+
+      - name: Build wheel
+        working-directory: flash-attn
+        run: |
+          $env:FLASH_ATTENTION_FORCE_BUILD = "TRUE"
+          python setup.py bdist_wheel --dist-dir=dist
+          dir dist
+
+      - name: Validate wheel build
+        run: |
+          if (-Not (Test-Path "flash-attn\\dist\\*.whl")) {
+            Write-Error "❌ No wheel was built."
+            exit 1
+          } else {
+            echo "✅ Wheel built successfully."
+          }
+
+      - name: Upload wheel to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: flash-attn/dist/*.whl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
