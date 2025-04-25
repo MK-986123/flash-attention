@@ -1,4 +1,4 @@
-name: Build wheels and upload to GitHub Releases
+name: Build Windows wheels and upload to GitHub Releases
 
 on:
   create:
@@ -6,150 +6,53 @@ on:
       - "v*"
 
 jobs:
-  create_releases:
-    name: Create Releases
-    runs-on: ubuntu-latest # Can keep ubuntu for release creation step
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
-      tag_name: ${{ steps.get_tag.outputs.tag }}
-    steps:
-      - name: Get the tag version
-        id: get_tag
-        run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-        shell: bash
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ steps.get_tag.outputs.tag }}
-          release_name: ${{ steps.get_tag.outputs.tag }}
-          body: |
-            **Windows Wheels**
-            | Flash-Attention | Python | PyTorch             | CUDA |
-            |-----------------|--------|---------------------|------|
-            | ${{ matrix.flash-attn-version && join(matrix.flash-attn-version, ', ') || '2.4.3, 2.5.9, 2.6.3, 2.7.4.post1' }} | 3.12   | 2.6.0, 2.7.0, 2.8.0 | 12.8 |
-          draft: false
-          prerelease: false
-
-  build_wheels:
-    name: Build wheels and Upload (Windows)
-    needs: create_releases
-    runs-on: windows-latest # Changed to Windows runner
+  build_windows_wheels:
+    name: Build wheels on Windows
+    runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
-        # Keep flash-attn versions if you intend to build all of them for the new config
-        flash-attn-version: ["2.4.3", "2.5.9", "2.6.3", "2.7.4.post1"]
-        python-version: ["3.12"] # Fixed Python version
-        torch-version: ["2.6.0", "2.7.0", "2.8.0"] # Updated PyTorch versions
-        cuda-version: ["12.8"] # Fixed CUDA version
-        # Exclude block removed as constraints are now fixed
-
+        torch-version: ["2.6.0", "2.7.0", "2.8.0"]
+        python-version: ["3.12"]
+        cuda-version: ["12.8"]
     steps:
       - uses: actions/checkout@v4
-      # Maximize build space and swap steps are Linux-specific and generally not needed/applicable on Windows runners
 
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
-      # Use a CUDA setup action compatible with Windows
-      - uses: Jimver/cuda-toolkit@v0.2.11 # Check for latest version compatible with Windows & CUDA 12.8
-        id: cuda-toolkit
-        with:
-          cuda: ${{ matrix.cuda-version }}
-          # Removed linux-local-args, method defaults usually work; check action docs if issues arise
-
-      - name: Install build tools
+      - name: Install dependencies
         run: |
-          pip install ninja setuptools wheel packaging
-        shell: bash # pip works fine in bash/pwsh
+          python -m pip install --upgrade pip setuptools wheel packaging ninja
+          python -m pip install cmake
 
-      - name: Set CUDA and PyTorch versions for environment
+      - name: Set CUDA environment for build
         run: |
-          $cudaVersionShort = "${{ matrix.cuda-version }}".Replace(".", "")
-          $torchVersionShort = "${{ matrix.torch-version }}".Split('.')[0..1] -join '.'
-          echo "MATRIX_CUDA_VERSION=$cudaVersionShort" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          echo "MATRIX_TORCH_VERSION=$torchVersionShort" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          echo "CACHE_KEY=cuda-ext-${{ matrix.flash-attn-version }}-py${{ matrix.python-version }}-torch${{ matrix.torch-version }}-cuda${{ matrix.cuda-version }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-        shell: powershell
+          echo "CUDA_HOME=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8" >> $GITHUB_ENV
+          echo "PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin;$PATH" >> $GITHUB_ENV
 
-      - name: Install PyTorch ${{ matrix.torch-version }}+cu${{ env.MATRIX_CUDA_VERSION }}
+      - name: Install PyTorch ${{ matrix.torch-version }} with CUDA 12.8
         run: |
-          # PyTorch wheel availability for specific CUDA minor versions like 12.8 can be inconsistent.
-          # Often, builds are against major CUDA versions (e.g., cu121 for CUDA 12.x).
-          # Adjust TORCH_CUDA_VERSION if necessary based on available wheels at download.pytorch.org
-          $env:TORCH_CUDA_VERSION="cu121" # Assuming cu121 build works for CUDA 12.8 - VERIFY THIS
-          if (${{ env.MATRIX_TORCH_VERSION }} -ge 2.6) { # Example logic if newer Torch needs newer CUDA build tag
-               # $env:TORCH_CUDA_VERSION="cu12x" # Adjust if specific builds like cu124 or later become standard
-          }
-          pip install --no-cache-dir torch==${{ matrix.torch-version }} --index-url https://download.pytorch.org/whl/$env:TORCH_CUDA_VERSION
-          # Verify installations
-          nvcc --version
-          python -V
-          python -c "import torch; print('PyTorch:', torch.__version__)"
-          python -c "import torch; print('CUDA Available:', torch.cuda.is_available()); print('CUDA Version:', torch.version.cuda)"
-          python -c "import torch.utils.cpp_extension; print('CUDA Home:', torch.utils.cpp_extension.CUDA_HOME)"
-        shell: powershell
+          pip install --index-url https://download.pytorch.org/whl/cu128 torch==${{ matrix.torch-version }}
+          python -c "import torch; print('Torch Version:', torch.__version__); print('CUDA:', torch.version.cuda)"
 
-      - name: Checkout flash-attn
+      - name: Checkout flash-attention
         run: |
           git clone https://github.com/Dao-AILab/flash-attention.git
           cd flash-attention
-          git checkout v${{ matrix.flash-attn-version }}
-        shell: bash # Git commands work fine in bash/pwsh
+          git checkout v${{ github.ref_name }}
 
-      # Cache might need path adjustments for Windows if build outputs differ, but often works cross-platform
-      - name: Cache CUDA extension build
-        uses: actions/cache@v3
-        with:
-          path: |
-            flash-attention/build
-            flash-attention/flash_attn.egg-info
-            flash-attention/**/*.pyd # Windows uses .pyd instead of .so
-            flash-attention/**/*.dll
-          key: ${{ env.CACHE_KEY }}-${{ hashFiles('flash-attention/csrc/**') }}
-          restore-keys: |
-            ${{ env.CACHE_KEY }}-
-
-      - name: Build wheels
+      - name: Build wheel
         run: |
-          # Ensure CUDA paths are set if the toolkit action doesn't add them automatically
-          # $env:PATH = "$($env:CUDA_PATH)\bin;$($env:CUDA_PATH)\libnvvp;$env:PATH" # Example if needed
-          $env:FLASH_ATTENTION_FORCE_BUILD='TRUE'
-          # Set MAX_JOBS for parallel compilation (adjust if needed)
-          $env:MAX_JOBS = ($env:NUMBER_OF_PROCESSORS - 1)
-
           cd flash-attention
+          set FLASH_ATTENTION_FORCE_BUILD=TRUE
           python setup.py bdist_wheel --dist-dir=dist
+          dir dist
 
-          # Rename wheel file for Windows/PowerShell
-          $baseWheel = Get-ChildItem -Path dist/*.whl | Select-Object -First 1
-          if ($baseWheel) {
-              $baseWheelName = $baseWheel.Name
-              $newWheelName = $baseWheelName -replace "${{ matrix.flash-attn-version }}", "${{ matrix.flash-attn-version }}+cu${{ env.MATRIX_CUDA_VERSION }}torch${{ env.MATRIX_TORCH_VERSION }}"
-              Move-Item -Path $baseWheel.FullName -Destination "dist\$newWheelName"
-              echo "wheel_name=$newWheelName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          } else {
-              Write-Error "Wheel file not found in dist directory"
-              exit 1
-          }
-        shell: powershell
-
-      - name: Install Test
-        run: |
-          pip install flash-attention/dist/${{ env.wheel_name }}
-          python -c "import flash_attn; print(flash_attn.__version__)"
-        shell: bash # pip/python work fine
-
-      - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: flash-attention/dist/*.whl
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create_releases.outputs.upload_url }}
-          asset_path: flash-attention/dist/${{ env.wheel_name }}
-          asset_name: ${{ env.wheel_name }}
-          asset_content_type: application/octet-stream # More generic type for wheels
