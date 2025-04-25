@@ -40,11 +40,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip setuptools wheel packaging ninja cmake
+          python -m pip install --upgrade pip setuptools wheel packaging ninja cmake
 
       - name: Install PyTorch ${{ matrix.torch-version }}+cu128
         run: |
-          pip install --index-url https://download.pytorch.org/whl/cu128 torch==${{ matrix.torch-version }}
+          python -m pip install --index-url https://download.pytorch.org/whl/cu128 torch==${{ matrix.torch-version }}
           python -c "import torch; print('Torch:', torch.__version__, 'CUDA:', torch.version.cuda)"
 
       - name: Clone flash-attention repo
@@ -65,6 +65,8 @@ jobs:
           if (-Not (Test-Path "flash-attn\\dist\\*.whl")) {
             Write-Error "❌ No wheel was built."
             exit 1
+          } else {
+            echo "✅ Wheel built successfully."
           }
 
       - name: Upload wheel to GitHub Release
