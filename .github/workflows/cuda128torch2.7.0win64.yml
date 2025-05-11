@@ -25,8 +25,16 @@ jobs:
   build_windows_wheel:
     runs-on: windows-2022
     env:
+      CUDA_VERSION_MAJOR_MINOR: ${{ env.CUDA_VERSION_MAJOR_MINOR }}
+      CUDA_VERSION_FULL: ${{ env.CUDA_VERSION_FULL }}
+      CUDA_DRIVER_FOR_FULL_VERSION: ${{ env.CUDA_DRIVER_FOR_FULL_VERSION }}
+      PYTHON_VERSION: ${{ env.PYTHON_VERSION }}
+      TORCH_VERSION: ${{ env.TORCH_VERSION }}
+      TORCHVISION_VERSION: ${{ env.TORCHVISION_VERSION }}
+      TORCHAUDIO_VERSION: ${{ env.TORCHAUDIO_VERSION }}
+      TORCH_CUDA_SUFFIX: ${{ env.TORCH_CUDA_SUFFIX }}
       TORCH_VERSION_TAG: "${{ env.TORCH_VERSION }}+${{ env.TORCH_CUDA_SUFFIX }}"
-      CUDA_VERSION_MAJOR_MINOR_USCORE: ${{ env.CUDA_VERSION_MAJOR_MINOR.replace('.', '_') }}
+      CUDA_VERSION_MAJOR_MINOR_USCORE: "${{ env.CUDA_VERSION_MAJOR_MINOR }}"
 
     steps:
       - name: Checkout repository
@@ -47,38 +55,52 @@ jobs:
           CUDA_INSTALLER_URL: "https://developer.download.nvidia.com/compute/cuda/${{ env.CUDA_VERSION_FULL }}/local_installers/cuda_${{ env.CUDA_VERSION_FULL }}_${{ env.CUDA_DRIVER_FOR_FULL_VERSION }}_win10.exe"
           CUDA_INSTALL_DIR_ROOT: "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA"
         run: |
-          $CUDA_INSTALL_DIR = Join-Path $env:CUDA_INSTALL_DIR_ROOT "v${{ env.CUDA_VERSION_MAJOR_MINOR }}"
-          echo "Downloading CUDA Toolkit ${{ env.CUDA_VERSION_FULL }} from ${{ env.CUDA_INSTALLER_URL }}"
-          Invoke-WebRequest -Uri $env:CUDA_INSTALLER_URL -OutFile "cuda_installer.exe" -UseBasicParsing
-          echo "Installing CUDA Toolkit (nvcc, cudart, nvrtc, nvtx, visual_studio_integration)..."
-          cmd /c "cuda_installer.exe -s nvcc_${{ env.CUDA_VERSION_MAJOR_MINOR }} cudart_${{ env.CUDA_VERSION_MAJOR_MINOR }} nvrtc_${{ env.CUDA_VERSION_MAJOR_MINOR }} nvtx_${{ env.CUDA_VERSION_MAJOR_MINOR }}"
-          echo "Adding CUDA to GITHUB_PATH and GITHUB_ENV..."
-          echo "$CUDA_INSTALL_DIR/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          echo "CUDA_PATH=$CUDA_INSTALL_DIR" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          echo "CUDA_HOME=$CUDA_INSTALL_DIR" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          echo "CUDA_PATH_V${{ env.CUDA_VERSION_MAJOR_MINOR_USCORE }}=$CUDA_INSTALL_DIR" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          try {
+            $CUDA_INSTALL_DIR = Join-Path $env:CUDA_INSTALL_DIR_ROOT "v${{ env.CUDA_VERSION_MAJOR_MINOR }}"
+            echo "Downloading CUDA Toolkit ${{ env.CUDA_VERSION_FULL }} from ${{ env.CUDA_INSTALLER_URL }}"
+            Invoke-WebRequest -Uri $env:CUDA_INSTALLER_URL -OutFile "cuda_installer.exe" -UseBasicParsing
+            echo "Installing CUDA Toolkit..."
+            cmd /c "cuda_installer.exe -s nvcc_${{ env.CUDA_VERSION_MAJOR_MINOR }} cudart_${{ env.CUDA_VERSION_MAJOR_MINOR }} nvrtc_${{ env.CUDA_VERSION_MAJOR_MINOR }} nvtx_${{ env.CUDA_VERSION_MAJOR_MINOR }}"
+            echo "Adding CUDA to PATH..."
+            echo "$CUDA_INSTALL_DIR/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            echo "CUDA_PATH=$CUDA_INSTALL_DIR" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            echo "CUDA_HOME=$CUDA_INSTALL_DIR" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } catch {
+            Write-Error "CUDA installation failed. Please verify the installer URL and environment variables."
+            exit 1
+          }
 
       - name: Verify NVCC
         shell: powershell
         run: |
           nvcc --version
-          echo "CUDA_PATH from env: $env:CUDA_PATH"
-          Get-Command nvcc
+          echo "CUDA_PATH: $env:CUDA_PATH"
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Python Dependencies (PyTorch, build tools, etc.)
+      - name: Install Python Dependencies
         shell: powershell
         run: |
-          python -m pip install --upgrade pip setuptools wheel packaging
-          echo "Installing PyTorch ${{ env.TORCH_VERSION_TAG }}, torchvision, torchaudio for CUDA ${{ env.TORCH_CUDA_SUFFIX }}"
-          pip install torch==${{ env.TORCH_VERSION }}+${{ env.TORCH_CUDA_SUFFIX }} torchvision==${{ env.TORCHVISION_VERSION }}+${{ env.TORCH_CUDA_SUFFIX }} torchaudio==${{ env.TORCHAUDIO_VERSION }}+${{ env.TORCH_CUDA_SUFFIX }}
-          pip install ninja
-          # If flash-attention has a general requirements.txt, uncomment the line below:
-          # if (Test-Path requirements.txt) { pip install -r requirements.txt }
+          $retryCount = 3
+          for ($i = 1; $i -le $retryCount; $i++) {
+            try {
+              python -m pip install --upgrade pip setuptools==65.5.0 wheel==0.41.2 packaging
+              echo "Installing PyTorch ${{ env.TORCH_VERSION_TAG }}"
+              pip install torch==${{ env.TORCH_VERSION }}+${{ env.TORCH_CUDA_SUFFIX }} torchvision==${{ env.TORCHVISION_VERSION }}+${{ env.TORCH_CUDA_SUFFIX }} torchaudio==${{ env.TORCHAUDIO_VERSION }}+${{ env.TORCH_CUDA_SUFFIX }}
+              pip install ninja
+              break
+            } catch {
+              if ($i -eq $retryCount) {
+                Write-Error "Failed to install Python dependencies after $retryCount attempts."
+                exit 1
+              }
+              Write-Warning "Retrying dependency installation ($i/$retryCount)..."
+              Start-Sleep -Seconds 5
+            }
+          }
 
       - name: Build flash-attn wheel
         shell: powershell
@@ -92,8 +114,6 @@ jobs:
           FLASH_ATTENTION_BUILD_VERBOSE: "1"
         run: |
           python setup.py bdist_wheel --verbose
-          # Optional cleaner build:
-          # python -m build --wheel --no-isolation --verbose
 
       - name: List built wheel
         shell: powershell
@@ -103,5 +123,5 @@ jobs:
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
         with:
-          name: flash-attn-wheel-windows-py${{ env.PYTHON_VERSION }}-cuda${{ env.CUDA_VERSION_MAJOR_MINOR }}-torch${{ env.TORCH_VERSION_TAG }}
+          name: flash-attn-wheel-py${{ env.PYTHON_VERSION }}-cuda${{ env.CUDA_VERSION_MAJOR_MINOR }}-torch${{ env.TORCH_VERSION_TAG }}
           path: dist/*.whl
