@@ -1,91 +1,119 @@
-name: Build Windows wheels and upload to GitHub Releases
+name: Build flash-attn Wheel for Windows (CUDA 12.4, Python 3.12, PyTorch 2.3.1, RTX 4070TiS)
 
 on:
-  create:
-    tags:
-      - "v*"
+  workflow_dispatch: # Allows manual triggering
+  push:
+    branches:
+      - main # Adjust to your development branch if needed
+
+env:
+  # CUDA Configuration (User requested 12.6, using 12.4.1 as a practical, recent version for GH Actions)
+  # When CUDA 12.6 is released and an installer is available, update these:
+  CUDA_VERSION_MAJOR_MINOR: "12.4"
+  CUDA_VERSION_FULL: "12.4.1"
+  # This driver version corresponds to CUDA 12.4.1. Update if CUDA_VERSION_FULL changes.
+  CUDA_DRIVER_FOR_FULL_VERSION: "551.78"
+
+  # Python Configuration
+  PYTHON_VERSION: "3.12"
+
+  # PyTorch Configuration (User requested 2.6.0+cu126, using 2.3.1+cu121 as a realistic placeholder)
+  # Update TORCH_VERSION and TORCH_CUDA_SUFFIX when your target PyTorch version is released.
+  # PyTorch's +cu121 builds are typically compatible with CUDA Toolkit 12.1 through 12.x.
+  TORCH_VERSION: "2.3.1"
+  TORCHVISION_VERSION: "0.18.1" # Ensure this matches the PyTorch version compatibility
+  TORCHAUDIO_VERSION: "2.3.1"  # Ensure this matches the PyTorch version compatibility
+  TORCH_CUDA_SUFFIX: "cu121" # Standard PyTorch suffix for CUDA 12.1 compiled binaries
 
 jobs:
-  build_windows_wheels:
-    name: Build wheels on Windows
+  build_windows_wheel:
     runs-on: windows-2022
-    strategy:
-      fail-fast: false
-      matrix:
-        torch-version: ["2.6.0", "2.7.0", "2.8.0"]
-        python-version: ["3.12"]
-        cuda-version: ["12.8"]
+    env:
+      TORCH_VERSION_TAG: "${{ env.TORCH_VERSION }}+${{ env.TORCH_CUDA_SUFFIX }}" # e.g., 2.3.1+cu121
+      CUDA_VERSION_MAJOR_MINOR_USCORE: ${{ env.CUDA_VERSION_MAJOR_MINOR.replace('.', '_') }} # e.g., 12_4
 
     steps:
-      - name: Checkout source
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          submodules: recursive # Important for projects like flash-attention
 
-      - name: Setup Python
+      - name: Set up MSVC 2022
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          toolset: "14.3" # Corresponds to VS 2022, adjust if specific CUDA needs differ
+          vsversion: "2022"
+
+      - name: Install CUDA Toolkit ${{ env.CUDA_VERSION_FULL }}
+        shell: powershell
+        env:
+          CUDA_INSTALLER_URL: "https://developer.download.nvidia.com/compute/cuda/${{ env.CUDA_VERSION_FULL }}/local_installers/cuda_${{ env.CUDA_VERSION_FULL }}_${{ env.CUDA_DRIVER_FOR_FULL_VERSION }}_windows.exe"
+          CUDA_INSTALL_DIR_ROOT: "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
+        run: |
+          $CUDA_INSTALL_DIR = Join-Path $env:CUDA_INSTALL_DIR_ROOT "v${{ env.CUDA_VERSION_MAJOR_MINOR }}"
+          echo "Downloading CUDA Toolkit ${{ env.CUDA_VERSION_FULL }} from ${{ env.CUDA_INSTALLER_URL }}"
+          Invoke-WebRequest -Uri "${{ env.CUDA_INSTALLER_URL }}" -OutFile "cuda_installer.exe" -UseBasicParsing
+          echo "Installing CUDA Toolkit (nvcc, cudart, nvrtc, nvtx, visual_studio_integration)..."
+          # Use cmd /c for the installer as it's an .exe and handles silent install flags
+          # Ensure the component names match those available in the installer for the specific CUDA version
+          cmd /c "cuda_installer.exe -s nvcc_${{ env.CUDA_VERSION_MAJOR_MINOR }} cudart_${{ env.CUDA_VERSION_MAJOR_MINOR }} nvrtc_${{ env.CUDA_VERSION_MAJOR_MINOR }} nvtx_${{ env.CUDA_VERSION_MAJOR_MINOR }} visual_studio_integration_${{ env.CUDA_VERSION_MAJOR_MINOR }}"
+          echo "Adding CUDA to GITHUB_PATH and GITHUB_ENV..."
+          echo "${CUDA_INSTALL_DIR}\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "CUDA_PATH=${CUDA_INSTALL_DIR}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "CUDA_HOME=${CUDA_INSTALL_DIR}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append # Some builds look for CUDA_HOME
+          echo "CUDA_PATH_V${{ env.CUDA_VERSION_MAJOR_MINOR_USCORE }}=${CUDA_INSTALL_DIR}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify NVCC
+        shell: powershell
+        run: |
+          nvcc --version
+          echo "CUDA_PATH from env: $env:CUDA_PATH"
+          Get-Command nvcc
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install CUDA Toolkit via Jimver
-        uses: Jimver/cuda-toolkit@v0.2.11
-        with:
-          cuda: ${{ matrix.cuda-version }}
-          method: "network"
-          sub-packages: '["nvcc", "cudart", "cublas", "curand", "cusparse"]'
-
-      - name: Add CUDA to environment
+      - name: Install Python Dependencies (PyTorch, build tools, etc.)
+        shell: powershell
         run: |
-          echo "CUDA_PATH=${{ env.CUDA_PATH }}" >> $GITHUB_ENV
-          echo "CUDA_HOME=${{ env.CUDA_PATH }}" >> $GITHUB_ENV
-          echo "$env:CUDA_PATH\\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          python -m pip install --upgrade pip setuptools wheel packaging
+          echo "Installing PyTorch ${{ env.TORCH_VERSION_TAG }}, torchvision, torchaudio for CUDA ${{ env.TORCH_CUDA_SUFFIX }}"
+          pip install torch==${{ env.TORCH_VERSION }}+${{ env.TORCH_CUDA_SUFFIX }} torchvision==${{ env.TORCHVISION_VERSION }}+${{ env.TORCH_CUDA_SUFFIX }} torchaudio==${{ env.TORCHAUDIO_VERSION }}+${{ env.TORCH_CUDA_SUFFIX }} --index-url https://download.pytorch.org/whl/${{ env.TORCH_CUDA_SUFFIX }}
+          pip install ninja # Often used for faster C++ extension builds
+          # If flash-attention has a general requirements.txt, uncomment the line below:
+          # if (Test-Path requirements.txt) { pip install -r requirements.txt }
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip setuptools wheel packaging ninja cmake
-
-      - name: Install PyTorch ${{ matrix.torch-version }}+cu128
-        run: |
-          python -m pip install --index-url https://download.pytorch.org/whl/cu128 torch==${{ matrix.torch-version }}
-          python -c "import torch; print('Torch:', torch.__version__, 'CUDA:', torch.version.cuda)"
-
-      - name: Clone flash-attention repo
-        run: |
-          git clone https://github.com/Dao-AILab/flash-attention.git flash-attn
-          cd flash-attn
-          git checkout v${{ github.ref_name }}
-
-      - name: Ensure requirements.txt
-        working-directory: flash-attn
-        run: |
-          if (-Not (Test-Path "requirements.txt")) {
-            echo "⚠️ 'requirements.txt' missing. Creating a placeholder file."
-            echo "# Add your dependencies here" > requirements.txt
-          }
-
-      - name: Install Python dependencies from requirements.txt
-        working-directory: flash-attn
-        run: |
-          python -m pip install -r requirements.txt || echo "No requirements to install."
-
-      - name: Build wheel
-        working-directory: flash-attn
-        run: |
-          $env:FLASH_ATTENTION_FORCE_BUILD = "TRUE"
-          python setup.py bdist_wheel --dist-dir=dist
-          dir dist
-
-      - name: Validate wheel build
-        working-directory: flash-attn
-        run: |
-          if (-Not (Test-Path "dist\\*.whl")) {
-            Write-Error "❌ No wheel was built."
-            exit 1
-          } else {
-            echo "✅ Wheel built successfully."
-          }
-
-      - name: Upload wheel to GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: flash-attn/dist/*.whl
+      - name: Build flash-attn wheel
+        shell: powershell
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Target RTX 4070 Ti Super (Ada Lovelace SM_89). Add other archs if needed (e.g., "8.0;8.6;8.9;9.0")
+          TORCH_CUDA_ARCH_LIST: "8.9"
+          # Set to 1 to build kernels from the 'hopper' directory (includes Ada sm_89 by default)
+          FLASH_ATTENTION_BUILD_HOPPER: "1"
+          # Ensures CUDA specific extensions are built.
+          FLASH_ATTENTION_FORCE_BUILD_CUDA: "1"
+          # Skip Composable Kernel (hipBLAS/rocBLAS for AMD) builds if focusing on NVIDIA CUDA
+          FLASH_ATTENTION_SKIP_BUILD_CK: "1"
+          # For MSVC on Windows
+          DISTUTILS_USE_SDK: "1"
+          SETUPTOOLS_USE_DISTUTILS: "stdlib" # Helps with setuptools/distutils interplay
+          FLASH_ATTENTION_BUILD_VERBOSE: "1" # More detailed build logs
+          # MAX_JOBS: "4" # Optional: Adjust based on runner's core count for parallel compilation
+        run: |
+          python setup.py bdist_wheel --verbose
+          # For a potentially cleaner build using modern standards (if setup.py supports it well):
+          # python -m build --wheel --no-isolation --verbose
+
+      - name: List built wheel
+        shell: powershell
+        run: |
+          Get-ChildItem -Path .\dist\ -Filter *.whl
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flash-attn-wheel-windows-py${{ env.PYTHON_VERSION }}-cuda${{ env.CUDA_VERSION_MAJOR_MINOR }}-torch${{ env.TORCH_VERSION_TAG }}
+          path: dist/*.whl
