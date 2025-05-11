@@ -1,127 +1,106 @@
-name: Build flash-attn Wheel for Windows (CUDA 12.4, Python 3.12, PyTorch 2.3.1, RTX 4070TiS)
+name: Test Windows CUDA ${{ matrix.cuda-version }} PyTorch ${{ matrix.torch-version }}
 
 on:
-  workflow_dispatch: # Allows manual triggering
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/cuda128torch2.7.0win64.yml"
+      - "setup.py"
+      - "csrc/**"
+      - "flash_attn/**"
+      - "hopper/**"
+      - "tests/**"
   push:
     branches:
-      - main # Adjust to your development branch if needed
+      - main
+    paths:
+      - ".github/workflows/cuda128torch2.7.0win64.yml"
+      - "setup.py"
+      - "csrc/**"
+      - "flash_attn/**"
+      - "hopper/**"
+      - "tests/**"
 
 env:
-  # CUDA Configuration
-  CUDA_VERSION_MAJOR_MINOR: "12.4"
-  CUDA_VERSION_FULL: "12.4.1"
-  CUDA_DRIVER_FOR_FULL_VERSION: "551.78"
-
-  # Python Configuration
-  PYTHON_VERSION: "3.12"
-
-  # PyTorch Configuration
-  TORCH_VERSION: "2.3.1"
-  TORCHVISION_VERSION: "0.18.1"
-  TORCHAUDIO_VERSION: "2.3.1"
-  TORCH_CUDA_SUFFIX: "cu121"
+  FLASH_ATTENTION_FORCE_BUILD_TRITON: 0
+  FLASH_ATTENTION_SKIP_BUILD_API: 1
+  MSVC_TOOLSET: "14.29" # VS 2019
+  TORCH_VERSION: "2.7.0.dev20240507"
+  TORCH_CUDA_VERSION: "cu121"
+  CUDA_VERSION: "12.1.0"
+  CUDA_VERSION_MM: "12.1"
+  CUDA_VERSION_MM_USCORE: "12_1"
+  CUDA_URL: "https://developer.download.nvidia.com/compute/cuda/12.1.0/local_installers/cuda_12.1.0_531.14_windows.exe"
 
 jobs:
-  build_windows_wheel:
-    runs-on: windows-2022
-    env:
-      CUDA_VERSION_MAJOR_MINOR: ${{ env.CUDA_VERSION_MAJOR_MINOR }}
-      CUDA_VERSION_FULL: ${{ env.CUDA_VERSION_FULL }}
-      CUDA_DRIVER_FOR_FULL_VERSION: ${{ env.CUDA_DRIVER_FOR_FULL_VERSION }}
-      PYTHON_VERSION: ${{ env.PYTHON_VERSION }}
-      TORCH_VERSION: ${{ env.TORCH_VERSION }}
-      TORCHVISION_VERSION: ${{ env.TORCHVISION_VERSION }}
-      TORCHAUDIO_VERSION: ${{ env.TORCHAUDIO_VERSION }}
-      TORCH_CUDA_SUFFIX: ${{ env.TORCH_CUDA_SUFFIX }}
-      TORCH_VERSION_TAG: "${{ env.TORCH_VERSION }}+${{ env.TORCH_CUDA_SUFFIX }}"
-      CUDA_VERSION_MAJOR_MINOR_USCORE: "${{ env.CUDA_VERSION_MAJOR_MINOR }}"
+  build:
+    runs-on: windows-2019
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10"]
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: recursive # Important for projects like flash-attention
+          submodules: recursive
 
-      - name: Set up MSVC 2022
+      - name: Set up MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
-          toolset: "14.3"
-          vsversion: "2022"
+          toolset: ${{ env.MSVC_TOOLSET }}
 
-      - name: Install CUDA Toolkit ${{ env.CUDA_VERSION_FULL }}
-        shell: powershell
-        env:
-          CUDA_INSTALLER_URL: "https://developer.download.nvidia.com/compute/cuda/${{ env.CUDA_VERSION_FULL }}/local_installers/cuda_${{ env.CUDA_VERSION_FULL }}_${{ env.CUDA_DRIVER_FOR_FULL_VERSION }}_win10.exe"
-          CUDA_INSTALL_DIR_ROOT: "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA"
+      - name: Install CUDA Toolkit
+        shell: cmd
         run: |
-          try {
-            $CUDA_INSTALL_DIR = Join-Path $env:CUDA_INSTALL_DIR_ROOT "v${{ env.CUDA_VERSION_MAJOR_MINOR }}"
-            echo "Downloading CUDA Toolkit ${{ env.CUDA_VERSION_FULL }} from ${{ env.CUDA_INSTALLER_URL }}"
-            Invoke-WebRequest -Uri $env:CUDA_INSTALLER_URL -OutFile "cuda_installer.exe" -UseBasicParsing
-            echo "Installing CUDA Toolkit..."
-            cmd /c "cuda_installer.exe -s nvcc_${{ env.CUDA_VERSION_MAJOR_MINOR }} cudart_${{ env.CUDA_VERSION_MAJOR_MINOR }} nvrtc_${{ env.CUDA_VERSION_MAJOR_MINOR }} nvtx_${{ env.CUDA_VERSION_MAJOR_MINOR }}"
-            echo "Adding CUDA to PATH..."
-            echo "$CUDA_INSTALL_DIR/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-            echo "CUDA_PATH=$CUDA_INSTALL_DIR" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            echo "CUDA_HOME=$CUDA_INSTALL_DIR" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          } catch {
-            Write-Error "CUDA installation failed. Please verify the installer URL and environment variables."
-            exit 1
-          }
+          echo Installing CUDA %CUDA_VERSION%...
+          curl -L -o cuda_installer.exe %CUDA_URL%
+          cuda_installer.exe -s nvcc_%CUDA_VERSION_MM% cudart_%CUDA_VERSION_MM% nvrtc_%CUDA_VERSION_MM% nvtx_%CUDA_VERSION_MM% visual_studio_integration_%CUDA_VERSION_MM%
+          echo Adding CUDA to PATH...
+          echo C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v%CUDA_VERSION_MM%\bin >> %GITHUB_PATH%
+          echo CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v%CUDA_VERSION_MM% >> %GITHUB_ENV%
+          echo CUDA_PATH_V%CUDA_VERSION_MM_USCORE%=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v%CUDA_VERSION_MM% >> %GITHUB_ENV%
 
-      - name: Verify NVCC
-        shell: powershell
-        run: |
-          nvcc --version
-          echo "CUDA_PATH: $env:CUDA_PATH"
-
-      - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ matrix.python-version }}
 
       - name: Install Python Dependencies
-        shell: powershell
         run: |
-          $retryCount = 3
-          for ($i = 1; $i -le $retryCount; $i++) {
-            try {
-              python -m pip install --upgrade pip setuptools==65.5.0 wheel==0.41.2 packaging
-              echo "Installing PyTorch ${{ env.TORCH_VERSION_TAG }}"
-              pip install torch==${{ env.TORCH_VERSION }}+${{ env.TORCH_CUDA_SUFFIX }} torchvision==${{ env.TORCHVISION_VERSION }}+${{ env.TORCH_CUDA_SUFFIX }} torchaudio==${{ env.TORCHAUDIO_VERSION }}+${{ env.TORCH_CUDA_SUFFIX }}
-              pip install ninja
-              break
-            } catch {
-              if ($i -eq $retryCount) {
-                Write-Error "Failed to install Python dependencies after $retryCount attempts."
-                exit 1
-              }
-              Write-Warning "Retrying dependency installation ($i/$retryCount)..."
-              Start-Sleep -Seconds 5
-            }
-          }
+          python -m pip install --upgrade pip
+          python -m pip install packaging cmake wheel
+          python -m pip install torch==${{ env.TORCH_VERSION }}+${{ env.TORCH_CUDA_VERSION }} \
+            torchvision==0.22.0+${{ env.TORCH_CUDA_VERSION }} \
+            torchaudio==2.7.0+${{ env.TORCH_CUDA_VERSION }} \
+            --index-url https://download.pytorch.org/whl/nightly/${{ env.TORCH_CUDA_VERSION }}
+          python -m pip install einops rotary-embedding-torch xformers==0.0.26
 
-      - name: Build flash-attn wheel
-        shell: powershell
+      - name: Build Wheel
+        run: |
+          pip wheel . -v --no-deps --no-clean --wheel-dir dist
         env:
-          TORCH_CUDA_ARCH_LIST: "8.9"
-          FLASH_ATTENTION_BUILD_HOPPER: "1"
-          FLASH_ATTENTION_FORCE_BUILD_CUDA: "1"
-          FLASH_ATTENTION_SKIP_BUILD_CK: "1"
-          DISTUTILS_USE_SDK: "1"
-          SETUPTOOLS_USE_DISTUTILS: "stdlib"
-          FLASH_ATTENTION_BUILD_VERBOSE: "1"
-        run: |
-          python setup.py bdist_wheel --verbose
+          TORCH_CUDA_ARCH_LIST: "8.0;8.6;8.9;9.0"
+          FLASH_ATTENTION_BUILD_VERBOSE: 1
+          FLASH_ATTENTION_BUILD_HOPPER: 1
+          FLASH_ATTENTION_SKIP_BUILD_WS: 1
+          FLASH_ATTENTION_DISABLE_FA_TRITON: 1
 
-      - name: List built wheel
-        shell: powershell
-        run: |
-          Get-ChildItem -Path .\dist\ -Filter *.whl
-
-      - name: Upload wheel artifact
+      - name: Upload Built Wheel
         uses: actions/upload-artifact@v4
         with:
-          name: flash-attn-wheel-py${{ env.PYTHON_VERSION }}-cuda${{ env.CUDA_VERSION_MAJOR_MINOR }}-torch${{ env.TORCH_VERSION_TAG }}
-          path: dist/*.whl
+          name: flash-attn-win-cuda${{ env.CUDA_VERSION_MM }}-torch${{ env.TORCH_VERSION }}-py${{ matrix.python-version }}
+          path: ./dist/*.whl
+          retention-days: 7
+
+      - name: Test Wheel
+        shell: cmd
+        run: |
+          set FLASH_ATTENTION_DISABLE_FA_TRITON=1
+          dir dist
+          pip install dist\*.whl
+          echo Running tests...
+          pytest -q -s tests/test_flash_attn.py -k "not ck"
+          pytest -q -s tests/test_rotary.py -k "not ck"
