@@ -24,13 +24,16 @@ on:
 env:
   FLASH_ATTENTION_FORCE_BUILD_TRITON: 0
   FLASH_ATTENTION_SKIP_BUILD_API: 1
-  MSVC_TOOLSET: "14.29" # VS 2019
-  TORCH_VERSION: "2.7.0.dev20240507"
-  TORCH_CUDA_VERSION: "cu121"
-  CUDA_VERSION: "12.1.0"
-  CUDA_VERSION_MM: "12.1"
-  CUDA_VERSION_MM_USCORE: "12_1"
-  CUDA_URL: "https://developer.download.nvidia.com/compute/cuda/12.1.0/local_installers/cuda_12.1.0_531.14_windows.exe"
+  MSVC_TOOLSET: "14.29" # VS 2019. As mentioned, consider VS 2022 (e.g., toolset "14.3x") for best compatibility with CUDA 12.6.
+  TORCH_VERSION: "2.7.0.dev20240507" # Hypothetical future/nightly PyTorch version.
+  TORCH_CUDA_VERSION: "cu126"       # Implies PyTorch compiled specifically against CUDA 12.6.
+  CUDA_VERSION: "12.6.0"
+  CUDA_VERSION_MM: "12.6"
+  CUDA_VERSION_MM_USCORE: "12_6"
+  # CUDA URL for version 12.6.0 with bundled driver 560.76
+  CUDA_URL: "https://developer.download.nvidia.com/compute/cuda/12.6.0/local_installers/cuda_12.6.0_560.76_windows.exe"
+  # Optional: If your workflow installation step uses a variable for the driver part of the filename
+  CUDA_DRIVER_FOR_12_6_0: "560.76"
 
 jobs:
   build:
