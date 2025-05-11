@@ -121,7 +121,7 @@ def check_if_rocm_home_none(global_option: str) -> None:
 
 
 def append_nvcc_threads(nvcc_extra_args):
-    nvcc_threads = os.getenv("NVCC_THREADS") or "2"
+    nvcc_threads = os.getenv("NVCC_THREADS") or "4"
     return nvcc_extra_args + ["--threads", nvcc_threads]
 
 
@@ -208,8 +208,6 @@ if not SKIP_CUDA_BUILD and not IS_ROCM:
                 "csrc/flash_attn/src/flash_fwd_hdim96_bf16_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_hdim128_fp16_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_hdim128_bf16_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_hdim160_fp16_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_hdim160_bf16_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_hdim192_fp16_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_hdim192_bf16_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_hdim256_fp16_sm80.cu",
@@ -222,8 +220,6 @@ if not SKIP_CUDA_BUILD and not IS_ROCM:
                 "csrc/flash_attn/src/flash_fwd_hdim96_bf16_causal_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_hdim128_fp16_causal_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_hdim128_bf16_causal_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_hdim160_fp16_causal_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_hdim160_bf16_causal_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_hdim192_fp16_causal_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_hdim192_bf16_causal_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_hdim256_fp16_causal_sm80.cu",
@@ -236,8 +232,6 @@ if not SKIP_CUDA_BUILD and not IS_ROCM:
                 "csrc/flash_attn/src/flash_bwd_hdim96_bf16_sm80.cu",
                 "csrc/flash_attn/src/flash_bwd_hdim128_fp16_sm80.cu",
                 "csrc/flash_attn/src/flash_bwd_hdim128_bf16_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim160_fp16_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim160_bf16_sm80.cu",
                 "csrc/flash_attn/src/flash_bwd_hdim192_fp16_sm80.cu",
                 "csrc/flash_attn/src/flash_bwd_hdim192_bf16_sm80.cu",
                 "csrc/flash_attn/src/flash_bwd_hdim256_fp16_sm80.cu",
@@ -250,8 +244,6 @@ if not SKIP_CUDA_BUILD and not IS_ROCM:
                 "csrc/flash_attn/src/flash_bwd_hdim96_bf16_causal_sm80.cu",
                 "csrc/flash_attn/src/flash_bwd_hdim128_fp16_causal_sm80.cu",
                 "csrc/flash_attn/src/flash_bwd_hdim128_bf16_causal_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim160_fp16_causal_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim160_bf16_causal_sm80.cu",
                 "csrc/flash_attn/src/flash_bwd_hdim192_fp16_causal_sm80.cu",
                 "csrc/flash_attn/src/flash_bwd_hdim192_bf16_causal_sm80.cu",
                 "csrc/flash_attn/src/flash_bwd_hdim256_fp16_causal_sm80.cu",
@@ -264,8 +256,6 @@ if not SKIP_CUDA_BUILD and not IS_ROCM:
                 "csrc/flash_attn/src/flash_fwd_split_hdim96_bf16_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_split_hdim128_fp16_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_split_hdim128_bf16_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_split_hdim160_fp16_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_split_hdim160_bf16_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_split_hdim192_fp16_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_split_hdim192_bf16_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_split_hdim256_fp16_sm80.cu",
@@ -278,8 +268,6 @@ if not SKIP_CUDA_BUILD and not IS_ROCM:
                 "csrc/flash_attn/src/flash_fwd_split_hdim96_bf16_causal_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_split_hdim128_fp16_causal_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_split_hdim128_bf16_causal_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_split_hdim160_fp16_causal_sm80.cu",
-                "csrc/flash_attn/src/flash_fwd_split_hdim160_bf16_causal_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_split_hdim192_fp16_causal_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_split_hdim192_bf16_causal_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_split_hdim256_fp16_causal_sm80.cu",
@@ -347,7 +335,11 @@ elif not SKIP_CUDA_BUILD and IS_ROCM:
         archs = os.getenv("GPU_ARCHS", "native").split(";")
         validate_and_update_archs(archs)
 
-        cc_flag = [f"--offload-arch={arch}" for arch in archs]
+        if archs != ['native']:
+            cc_flag = [f"--offload-arch={arch}" for arch in archs]
+        else:
+            arch = torch.cuda.get_device_properties("cuda").gcnArchName.split(":")[0]
+            cc_flag = [f"--offload-arch={arch}"]
 
         # HACK: The compiler flag -D_GLIBCXX_USE_CXX11_ABI is set to be the same as
         # torch._C._GLIBCXX_USE_CXX11_ABI

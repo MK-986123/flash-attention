@@ -31,8 +31,8 @@ def rotary_kernel(
     stride_x_nheads,
     stride_x_headdim,
     # Meta-parameters
-    # We want ROTARY_DIM to be constexpr, otherwise the compiler doesn't know that the mask
-    # is constant every 8 elements, and it will generate LDG.16 instead of LDG.128
+    # We want ROTARY_DIM to be constexpr, otherwise the triton compiler doesn't know that
+    # the mask is constant every 8 elements, and it will generate LDG.16 instead of LDG.128
     ROTARY_DIM: tl.constexpr,
     IS_SEQLEN_OFFSETS_TENSOR: tl.constexpr,
     IS_VARLEN: tl.constexpr,
@@ -138,13 +138,6 @@ def apply_rotary(
     assert headdim <= 256, "Only support headdim <= 256"
     assert seqlen_ro >= seqlen, "seqlen_ro must be >= seqlen"
 
-    assert (
-        cos.dtype == sin.dtype
-    ), f"cos and sin must have the same dtype, got {cos.dtype} and {sin.dtype}"
-    assert (
-        x.dtype == cos.dtype
-    ), f"Input and cos/sin must have the same dtype, got {x.dtype} and {cos.dtype}"
-
     cos, sin = cos.contiguous(), sin.contiguous()
     if isinstance(seqlen_offsets, torch.Tensor):
         assert seqlen_offsets.shape == (batch,)
@@ -163,7 +156,7 @@ def apply_rotary(
     # Need this, otherwise Triton tries to launch from cuda:0 and we get
     # ValueError: Pointer argument (at 0) cannot be accessed from Triton (cpu tensor?)
     with torch.cuda.device(x.device.index):
-        rotary_kernel[grid](
+        torch.library.wrap_triton(rotary_kernel)[grid](
             output,  # data ptrs
             x,
             cos,
