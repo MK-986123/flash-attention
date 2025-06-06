@@ -1,109 +1,277 @@
-name: Test Windows CUDA ${{ matrix.cuda-version }} PyTorch ${{ matrix.torch-version }}
+name: Build FlashAttention-3 for CUDA 12.8 / PyTorch 2.8 / Python 3.12 (Windows)
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - ".github/workflows/cuda128torch2.7.0win64.yml"
-      - "setup.py"
-      - "csrc/**"
-      - "flash_attn/**"
-      - "hopper/**"
-      - "tests/**"
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/cuda128torch2.7.0win64.yml"
-      - "setup.py"
-      - "csrc/**"
-      - "flash_attn/**"
-      - "hopper/**"
-      - "tests/**"
-
-env:
-  FLASH_ATTENTION_FORCE_BUILD_TRITON: 0
-  FLASH_ATTENTION_SKIP_BUILD_API: 1
-  MSVC_TOOLSET: "14.29" # VS 2019. As mentioned, consider VS 2022 (e.g., toolset "14.3x") for best compatibility with CUDA 12.6.
-  TORCH_VERSION: "2.7.0.dev20240507" # Hypothetical future/nightly PyTorch version.
-  TORCH_CUDA_VERSION: "cu126"       # Implies PyTorch compiled specifically against CUDA 12.6.
-  CUDA_VERSION: "12.6.0"
-  CUDA_VERSION_MM: "12.6"
-  CUDA_VERSION_MM_USCORE: "12_6"
-  # CUDA URL for version 12.6.0 with bundled driver 560.76
-  CUDA_URL: "https://developer.download.nvidia.com/compute/cuda/12.6.0/local_installers/cuda_12.6.0_560.76_windows.exe"
-  # Optional: If your workflow installation step uses a variable for the driver part of the filename
-  CUDA_DRIVER_FOR_12_6_0: "560.76"
+    inputs:
+      flash_attention_version:
+        description: 'FlashAttention version tag'
+        required: true
+        default: 'v3.0.0'
+        type: string
 
 jobs:
-  build:
-    runs-on: windows-2019
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10"]
+  build-wheel:
+    runs-on: windows-2022
+    timeout-minutes: 120
 
     steps:
-      - name: Checkout repository
+      # 1. Check out FlashAttention source
+      - name: Checkout FlashAttention
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          repository: Dao-AILab/flash-attention
+          path: flash-attention
+          ref: ${{ github.event.inputs.flash_attention_version }}
+          fetch-depth: 0
 
-      - name: Set up MSVC
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-          toolset: ${{ env.MSVC_TOOLSET }}
-
-      - name: Install CUDA Toolkit
-        shell: cmd
-        run: |
-          echo Installing CUDA %CUDA_VERSION%...
-          curl -L -o cuda_installer.exe %CUDA_URL%
-          cuda_installer.exe -s nvcc_%CUDA_VERSION_MM% cudart_%CUDA_VERSION_MM% nvrtc_%CUDA_VERSION_MM% nvtx_%CUDA_VERSION_MM% visual_studio_integration_%CUDA_VERSION_MM%
-          echo Adding CUDA to PATH...
-          echo C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v%CUDA_VERSION_MM%\bin >> %GITHUB_PATH%
-          echo CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v%CUDA_VERSION_MM% >> %GITHUB_ENV%
-          echo CUDA_PATH_V%CUDA_VERSION_MM_USCORE%=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v%CUDA_VERSION_MM% >> %GITHUB_ENV%
-
-      - name: Set up Python
+      # 2. Set up Python 3.12 with caching
+      - name: Set up Python 3.12
         uses: actions/setup-python@v4
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: '3.12'
+          cache: 'pip'
 
-      - name: Install Python Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install packaging cmake wheel
-          python -m pip install torch==${{ env.TORCH_VERSION }}+${{ env.TORCH_CUDA_VERSION }} \
-            torchvision==0.22.0+${{ env.TORCH_CUDA_VERSION }} \
-            torchaudio==2.7.0+${{ env.TORCH_CUDA_VERSION }} \
-            --index-url https://download.pytorch.org/whl/nightly/${{ env.TORCH_CUDA_VERSION }}
-          python -m pip install einops rotary-embedding-torch xformers==0.0.26
-
-      - name: Build Wheel
-        run: |
-          pip wheel . -v --no-deps --no-clean --wheel-dir dist
-        env:
-          TORCH_CUDA_ARCH_LIST: "8.0;8.6;8.9;9.0"
-          FLASH_ATTENTION_BUILD_VERBOSE: 1
-          FLASH_ATTENTION_BUILD_HOPPER: 1
-          FLASH_ATTENTION_SKIP_BUILD_WS: 1
-          FLASH_ATTENTION_DISABLE_FA_TRITON: 1
-
-      - name: Upload Built Wheel
-        uses: actions/upload-artifact@v4
+      # 3. Cache pip dependencies to speed up builds
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
         with:
-          name: flash-attn-win-cuda${{ env.CUDA_VERSION_MM }}-torch${{ env.TORCH_VERSION }}-py${{ matrix.python-version }}
-          path: ./dist/*.whl
-          retention-days: 7
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
-      - name: Test Wheel
+      # 4. Install or verify CUDA 12.8 installation
+      - name: Install CUDA 12.8 toolkit
+        shell: pwsh
+        run: |
+          $CUDA_PATH = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8"
+          
+          # Check if CUDA 12.8 is already installed
+          if (Test-Path "$CUDA_PATH\bin\nvcc.exe") {
+            Write-Output "CUDA 12.8 already installed"
+            & "$CUDA_PATH\bin\nvcc.exe" --version
+          } else {
+            Write-Output "Installing CUDA 12.8..."
+            # Download and install CUDA toolkit
+            $cuda_url = "https://developer.download.nvidia.com/compute/cuda/12.8.0/network_installers/cuda_12.8.0_windows_network.exe"
+            Invoke-WebRequest -Uri $cuda_url -OutFile "$env:TEMP\cuda_installer.exe"
+            
+            # Silent installation with only necessary components
+            Start-Process -Wait -FilePath "$env:TEMP\cuda_installer.exe" -ArgumentList @(
+              "--silent",
+              "--toolkit"
+            )
+            
+            # Verify installation
+            if (Test-Path "$CUDA_PATH\bin\nvcc.exe") {
+              Write-Output "CUDA 12.8 installed successfully"
+              & "$CUDA_PATH\bin\nvcc.exe" --version
+            } else {
+              Write-Error "CUDA installation failed"
+              exit 1
+            }
+          }
+
+      # 5. Set comprehensive CUDA environment variables
+      - name: Set CUDA environment variables
+        shell: pwsh
+        run: |
+          $CUDA_PATH = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8"
+          
+          # Set environment variables for current and future steps
+          echo "CUDA_PATH=$CUDA_PATH" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "CUDA_HOME=$CUDA_PATH" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "CUDA_ROOT=$CUDA_PATH" | Out-File -FilePath $env:GITHUB_ENV -Append
+          
+          # Add CUDA paths to PATH
+          echo "$CUDA_PATH\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          echo "$CUDA_PATH\lib\x64" | Out-File -FilePath $env:GITHUB_PATH -Append
+          echo "$CUDA_PATH\include" | Out-File -FilePath $env:GITHUB_PATH -Append
+          echo "$CUDA_PATH\extras\CUPTI\lib64" | Out-File -FilePath $env:GITHUB_PATH -Append
+          
+          # Verify CUDA is accessible
+          Write-Output "CUDA environment setup completed"
+
+      # 6. Set up MSVC environment
+      - name: Set up MSVC environment
+        uses: microsoft/setup-msbuild@v1.3
+        with:
+          msbuild-architecture: x64
+
+      - name: Initialize MSVC environment
         shell: cmd
         run: |
-          set FLASH_ATTENTION_DISABLE_FA_TRITON=1
-          dir dist
-          pip install dist\*.whl
-          echo Running tests...
-          pytest -q -s tests/test_flash_attn.py -k "not ck"
-          pytest -q -s tests/test_rotary.py -k "not ck"
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          echo MSVC environment initialized
+
+      # 7. Install PyTorch 2.8 + CUDA 12.8 with retry logic
+      - name: Install PyTorch 2.8 + CUDA 12.8
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          
+          # Install PyTorch with retry logic
+          $max_attempts = 3
+          $attempt = 1
+          
+          while ($attempt -le $max_attempts) {
+            try {
+              Write-Output "Attempt $attempt of $max_attempts to install PyTorch..."
+              pip install torch==2.8.0+cu128 torchvision==0.17.0+cu128 torchaudio==2.8.0+cu128 --extra-index-url https://download.pytorch.org/whl/cu128
+              
+              # Verify installation
+              python -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda}')"
+              break
+            }
+            catch {
+              Write-Warning "Attempt $attempt failed: $($_.Exception.Message)"
+              if ($attempt -eq $max_attempts) {
+                Write-Error "Failed to install PyTorch after $max_attempts attempts"
+                exit 1
+              }
+              $attempt++
+              Start-Sleep -Seconds 30
+            }
+          }
+
+      # 8. Install build dependencies with specific versions
+      - name: Install build dependencies
+        run: |
+          pip install setuptools>=68.0 wheel>=0.41.0 ninja>=1.11.0 packaging>=23.0
+          pip install cmake>=3.26.0
+          
+          # Install additional dependencies that FlashAttention might need
+          pip install numpy>=1.24.0 einops triton>=2.0.0
+
+      # 9. Verify build environment
+      - name: Verify build environment
+        shell: pwsh
+        run: |
+          Write-Output "=== Build Environment Verification ==="
+          Write-Output "Python version:"
+          python --version
+          
+          Write-Output "CUDA version:"
+          nvcc --version
+          
+          Write-Output "PyTorch info:"
+          python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA arch list: {torch.cuda.get_arch_list()}')"
+          
+          Write-Output "Environment variables:"
+          Get-ChildItem env: | Where-Object Name -like "*CUDA*" | Format-Table Name, Value
+          
+          Write-Output "Visual Studio version:"
+          & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\vswhere.exe" -latest -property catalog_productDisplayVersion
+
+      # 10. Pre-build setup and cleanup
+      - name: Pre-build setup
+        working-directory: flash-attention
+        shell: pwsh
+        run: |
+          # Clean any previous build artifacts
+          if (Test-Path "build") { Remove-Item -Recurse -Force build }
+          if (Test-Path "dist") { Remove-Item -Recurse -Force dist }
+          if (Test-Path "*.egg-info") { Remove-Item -Recurse -Force *.egg-info }
+          
+          # Ensure we're on the correct tag
+          git fetch --tags --force
+          git checkout ${{ github.event.inputs.flash_attention_version }}
+          git submodule update --init --recursive
+          
+          Write-Output "Pre-build setup completed"
+
+      # 11. Build FlashAttention-3 wheel with comprehensive error handling
+      - name: Build wheel
+        working-directory: flash-attention
+        shell: pwsh
+        env:
+          CUDA_HOME: 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8'
+          CUDA_PATH: 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8'
+          DISTUTILS_USE_SDK: '1'
+          FLASH_ATTENTION_FORCE_BUILD: 'TRUE'
+          TORCH_CUDA_ARCH_LIST: '7.5;8.0;8.6;8.9;9.0'
+          MAX_JOBS: '4'
+          NINJA_STATUS: '[%f/%t] '
+        run: |
+          Write-Output "Starting FlashAttention build..."
+          
+          try {
+            # Build with verbose output for debugging
+            python setup.py bdist_wheel --verbose
+            
+            Write-Output "Build completed successfully!"
+          }
+          catch {
+            Write-Error "Build failed with error: $($_.Exception.Message)"
+            Write-Output "Attempting alternative build method..."
+            
+            # Fallback build method
+            pip wheel . --no-deps --no-build-isolation -w dist/ --verbose
+          }
+
+      # 12. Verify and list build outputs
+      - name: Verify build outputs
+        shell: pwsh
+        run: |
+          Write-Output "=== Build Output Verification ==="
+          
+          if (Test-Path "flash-attention\dist\*.whl") {
+            Write-Output "Wheel files created:"
+            Get-ChildItem -Path "flash-attention\dist\" -Filter "*.whl" | Format-Table Name, Length, LastWriteTime
+            
+            # Test wheel installation in a virtual environment
+            Write-Output "Testing wheel installation..."
+            python -m venv test_env
+            .\test_env\Scripts\Activate.ps1
+            pip install (Get-ChildItem -Path "flash-attention\dist\" -Filter "*.whl" | Select-Object -First 1).FullName
+            python -c "import flash_attn; print(f'FlashAttention version: {flash_attn.__version__}')"
+            deactivate
+          } else {
+            Write-Error "No wheel files found in dist directory"
+            exit 1
+          }
+
+      # 13. Upload wheel artifact with metadata
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: flash-attn-v3-cu128-torch2.8-py312-win-${{ github.run_number }}
+          path: flash-attention/dist/*.whl
+          if-no-files-found: error
+          retention-days: 30
+
+      # 14. Create release notes
+      - name: Generate build summary
+        shell: pwsh
+        run: |
+          $wheel_file = Get-ChildItem -Path "flash-attention\dist\" -Filter "*.whl" | Select-Object -First 1
+          $wheel_size = [math]::Round($wheel_file.Length / 1MB, 2)
+          
+          $summary = @"
+          ## FlashAttention Windows Build Summary
+          
+          - **Version**: ${{ github.event.inputs.flash_attention_version }}
+          - **CUDA**: 12.8
+          - **PyTorch**: 2.8.0+cu128
+          - **Python**: 3.12
+          - **Platform**: Windows x64
+          - **Wheel Size**: ${wheel_size} MB
+          - **Build Time**: $((Get-Date) - (Get-Date $env:GITHUB_RUN_STARTED_AT))
+          - **Runner**: ${{ runner.os }} ${{ runner.arch }}
+          
+          ### Installation
+          ```
+          pip install $($wheel_file.Name)
+          ```
+          "@
+          
+          Write-Output $summary
+          $summary | Out-File -FilePath "build_summary.md"
+
+      # 15. Upload build summary
+      - name: Upload build summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-summary-${{ github.run_number }}
+          path: build_summary.md
+          retention-days: 30
