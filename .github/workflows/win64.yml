@@ -17,10 +17,6 @@ jobs:
         torch-version: ["2.8.0"]
         # https://developer.nvidia.com/cuda-toolkit-archive
         cuda-version: ["12.8.1"]
-        exclude:
-          # torch < 2.2 does not support Python 3.12 - not applicable with 2.8.0
-          # torch 2.0.1 does not support CUDA 12.x - not applicable with 2.8.0
-          # torch 2.7.0 does not support CUDA 12.4 - not applicable with 2.8.0
     steps:
       - uses: actions/checkout@v4
 
