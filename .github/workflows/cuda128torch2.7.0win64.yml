@@ -1,4 +1,4 @@
-name: Build FlashAttention-3 for CUDA 12.8 / PyTorch 2.8 / Python 3.12 (Windows)
+name: Build FlashAttention-2 for CUDA 12.8 / PyTorch 2.8 / Python 3.12 (Windows)
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       flash_attention_version:
         description: 'FlashAttention version tag'
         required: true
-        default: 'v3.0.0'
+        default: 'v2.7.4.post1'
         type: string
 
 jobs:
@@ -173,14 +173,19 @@ jobs:
           if (Test-Path "dist") { Remove-Item -Recurse -Force dist }
           if (Test-Path "*.egg-info") { Remove-Item -Recurse -Force *.egg-info }
           
-          # Ensure we're on the correct tag
+          # Ensure we're on the correct tag and list available tags for verification
           git fetch --tags --force
+          Write-Output "Available tags:"
+          git tag --list | Sort-Object -Descending | Select-Object -First 10
+          
+          # Checkout the specified tag
+          Write-Output "Checking out tag: ${{ github.event.inputs.flash_attention_version }}"
           git checkout ${{ github.event.inputs.flash_attention_version }}
           git submodule update --init --recursive
           
           Write-Output "Pre-build setup completed"
 
-      # 11. Build FlashAttention-3 wheel with comprehensive error handling
+      # 11. Build FlashAttention-2 wheel with comprehensive error handling
       - name: Build wheel
         working-directory: flash-attention
         shell: pwsh
@@ -193,7 +198,7 @@ jobs:
           MAX_JOBS: '4'
           NINJA_STATUS: '[%f/%t] '
         run: |
-          Write-Output "Starting FlashAttention build..."
+          Write-Output "Starting FlashAttention-2 build..."
           
           try {
             # Build with verbose output for debugging
@@ -235,7 +240,7 @@ jobs:
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
-          name: flash-attn-v3-cu128-torch2.8-py312-win-${{ github.run_number }}
+          name: flash-attn-v2-cu128-torch2.8-py312-win-${{ github.run_number }}
           path: flash-attention/dist/*.whl
           if-no-files-found: error
           retention-days: 30
@@ -248,7 +253,7 @@ jobs:
           $wheel_size = [math]::Round($wheel_file.Length / 1MB, 2)
           
           $summary = @"
-          ## FlashAttention Windows Build Summary
+          ## FlashAttention-2 Windows Build Summary
           
           - **Version**: ${{ github.event.inputs.flash_attention_version }}
           - **CUDA**: 12.8
@@ -263,6 +268,9 @@ jobs:
           ```
           pip install $($wheel_file.Name)
           ```
+          
+          ### Note
+          This is FlashAttention-2, not FlashAttention-3. FlashAttention-3 has not been released yet.
           "@
           
           Write-Output $summary
