@@ -85,7 +85,6 @@ def get_smem_store_atom(arch: cutlass.Constexpr[int], element_type: Type[cute.Nu
 
 
 
-@cute.jit
 def max_constexpr(
     a: cutlass.Constexpr[cute.Numeric], b: cutlass.Constexpr[cute.Numeric]
 ) -> cutlass.Constexpr[cute.Numeric]:
@@ -240,3 +239,99 @@ def predicate_k(tAcA: cute.Tensor, limit: cutlass.Int32) -> cute.Tensor:
         for rest_k in range(tApA.shape[2]):
             tApA[rest_v, 0, rest_k] = cute.elem_less(tAcA[(0, rest_v), 0, rest_k][1], limit)
     return tApA
+
+
+@dsl_user_op
+def barrier_sync(barrier_id: int | cutlass.Int32, number_of_threads: int | cutlass.Int32,
+                 *, loc=None, ip=None) -> None:
+    llvm.inline_asm(
+        None,
+        [cutlass.Int32(barrier_id).ir_value(loc=loc, ip=ip), cutlass.Int32(number_of_threads).ir_value(loc=loc, ip=ip)],
+        "bar.sync $0, $1;",
+        "r,r",
+        has_side_effects=True,
+        is_align_stack=False,
+        asm_dialect=llvm.AsmDialect.AD_ATT,
+    )
+
+
+@dsl_user_op
+def barrier_arrive(barrier_id: int | cutlass.Int32, number_of_threads: int | cutlass.Int32, *, loc=None, ip=None) -> None:
+    """
+    Arrive at a named barrier.
+    """
+    barrier_id = cutlass.Int32(barrier_id).ir_value(loc=loc, ip=ip)
+    number_of_threads = cutlass.Int32(number_of_threads).ir_value(loc=loc, ip=ip)
+    nvvm.barrier_arrive(
+        barrier_id=barrier_id, number_of_threads=number_of_threads, loc=loc, ip=ip
+    )
+    # llvm.inline_asm(
+    #     None,
+    #     [barrier_id, number_of_threads],
+    #     "bar.arrive $0, $1;",
+    #     "r,r",
+    #     has_side_effects=True,
+    #     is_align_stack=False,
+    #     asm_dialect=llvm.AsmDialect.AD_ATT,
+    # )
+
+
+@dsl_user_op
+def cp_async_mbarrier_arrive_shared(
+    mbar_ptr: cute.Pointer, noinc: bool = False, *, loc=None, ip=None
+) -> None:
+    nvvm.cp_async_mbarrier_arrive_shared(
+        mbar_ptr.llvm_ptr,
+        noinc=noinc,
+        loc=loc,
+        ip=ip,
+    )
+
+
+def canonical_warp_group_idx(sync: bool = True) -> cutlass.Int32:
+    warp_group_idx = cute.arch.thread_idx()[0] // 128
+    if cutlass.const_expr(sync):
+        warp_group_idx = cute.arch.make_warp_uniform(warp_group_idx)
+    return warp_group_idx
+
+
+# @dsl_user_op
+# def warp_vote_any_lt(a: float | cutlass.Float32, b: float | cutlass.Float32, *, loc=None, ip=None) -> cutlass.Boolean:
+#     mask = cutlass.Int32(-1)
+#     return cutlass.Boolean(
+#         llvm.inline_asm(
+#             T.i32(),
+#             [cutlass.Float32(a).ir_value(loc=loc, ip=ip), cutlass.Float32(b).ir_value(loc=loc, ip=ip), mask.ir_value(loc=loc, ip=ip)],
+#             ".pred p1, p2;\n"
+#             "setp.lt.f32 p1, $1, $2;\n"
+#             "vote.sync.any.pred p2, p1, $3;\n"
+#             "selp.u32 $0, 1, 0, p2;",
+#             # "selp.u32 $0, 1, 0, p1;",
+#             "=r,f,f,r",
+#             has_side_effects=False,
+#             is_align_stack=False,
+#             asm_dialect=llvm.AsmDialect.AD_ATT,
+#         )
+#     )
+
+
+@dsl_user_op
+def shuffle_sync(
+    value: cute.Numeric,
+    offset: cute.typing.Int,
+    width: cutlass.Constexpr[int] = cute.arch.WARP_SIZE,
+    *,
+    loc=None,
+    ip=None
+) -> cute.Numeric:
+    assert value.width % 32 == 0, "value type must be a multiple of 32 bits"
+    # 1 -> 0b11111, 2 -> 0b11110, 4 -> 0b11100, 8 -> 0b11000, 16 -> 0b10000, 32 -> 0b00000
+    mask = cute.arch.WARP_SIZE - width
+    clamp = cute.arch.WARP_SIZE - 1
+    mask_and_clamp = mask << 8 | clamp
+    val = cute.make_fragment(1, type(value))
+    val[0] = value
+    val_i32 = cute.recast_tensor(val, cutlass.Int32)
+    for i in range(cute.size(val_i32)):
+        val_i32[i] = cute.arch.shuffle_sync(val_i32[i], offset, mask_and_clamp=mask_and_clamp)
+    return val[0]
