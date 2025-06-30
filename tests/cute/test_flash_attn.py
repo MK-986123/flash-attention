@@ -38,7 +38,8 @@ from flash_attn.cute.interface import flash_attn_func, flash_attn_varlen_func
 # @pytest.mark.parametrize("d", [64, 128, 256])
 # @pytest.mark.parametrize('d', [32, 40, 64, 80, 96, 128])
 # @pytest.mark.parametrize("d", [64, 96, 128, 192])
-@pytest.mark.parametrize("d", [128])
+@pytest.mark.parametrize("d", [64, 128])
+# @pytest.mark.parametrize("d", [128])
 @pytest.mark.parametrize(
     "seqlen_q,seqlen_k",
     [
@@ -79,7 +80,8 @@ def test_flash_attn_output(
     # nheads = 1
     nheads_kv = nheads if mha_type == "mha" else (2 if mha_type == "gqa" else 1)
     dtype_ref = torch.bfloat16 if dtype == torch.float8_e4m3fn else dtype
-    dv_vals = [128, d] if d > 128 and d <= 192 else ([256, 512, d] if d <= 64 else [d])
+    # dv_vals = [128, d] if d > 128 and d <= 192 else ([256, 512, d] if d <= 64 else [d])
+    dv_vals = [d]
     if dtype == torch.float8_e4m3fn:
         dv_vals = [d]
     # attention_chunk_vals = [torch.randint(1, seqlen_k * 2, (1,)).item(), 0] if not DISABLE_LOCAL else [0]
@@ -137,13 +139,13 @@ def test_flash_attn_output(
 
         # k_extended = repeat(k_ref, "b s h d -> b s (h k) d", k=nheads // nheads_kv)
         # qk = torch.einsum('bshd,bthd->bhst', q_ref, k_extended).float()
-        # if qv is not None:
-        #     qk += torch.einsum('bshd,bthd->bhst', qv_ref, v_ref).float()
+        # # if qv is not None:
+        # #     qk += torch.einsum('bshd,bthd->bhst', qv_ref, v_ref).float()
         # m = qk.amax(-1, keepdim=True)
         # s_tmp = torch.exp((qk - m) / math.sqrt(d))
         # exp_sum = s_tmp.sum(-1)
-        # qk = torch.einsum('bthd,bshd->bhts', q_ref.float() / math.sqrt(d), k_ref.float())
-        # lse_ref = torch.logsumexp(qk, dim=-1)
+        # # qk = torch.einsum('bthd,bshd->bhts', q_ref.float() / math.sqrt(d), k_ref.float())
+        # # lse_ref = torch.logsumexp(qk, dim=-1)
 
         # Numerical error if we just do any arithmetic on out_ref
         fwd_atol = 2 * (out_ref + 0.3 - 0.3 - out_ref).abs().max().item()
@@ -185,6 +187,7 @@ def test_flash_attn_output(
             and not dv > 256
             and not attention_chunk != 0
             and softcap == 0.0
+            # and False
         ):
             g = torch.randn_like(out)
             # do_o = ((g.float() * out.float()).sum(-1)).transpose(1, 2)

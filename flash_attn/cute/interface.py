@@ -24,6 +24,7 @@ from cutlass.cute.runtime import from_dlpack
 
 from flash_attn.cute import utils
 from flash_attn.cute.flash_fwd import FlashAttentionForwardSm80, FlashAttentionForwardSm90
+from flash_attn.cute.flash_fwd_sm100 import FlashAttentionForwardSm100
 from flash_attn.cute.flash_bwd_preprocess import FlashAttentionBackwardPreprocess
 from flash_attn.cute.flash_bwd import FlashAttentionBackwardSm80
 from flash_attn.cute.flash_bwd_postprocess import FlashAttentionBackwardPostprocess
@@ -58,6 +59,7 @@ def _flash_attn_fwd(
     m_block_size: int = 128,
     n_block_size: int = 128,
     num_threads: int = 384,
+    _compute_capability: Optional[int] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     q, k, v = [maybe_contiguous(t) for t in (q, k, v)]
     num_head, head_dim = q.shape[-2:]
@@ -91,7 +93,7 @@ def _flash_attn_fwd(
     assert all(t is None or t.is_cuda for t in (q, k, v, cu_seqlens_q, cu_seqlens_k, seqused_q, seqused_k)), "inputs must be on CUDA device"
     assert num_head % num_head_kv == 0, "num_head must be divisible by num_head_kv"
     assert head_dim <= 256, "head_dim must be less than or equal to 256"
-    alignment = 128 // q.element_size()
+    alignment = 16 // q.element_size()
     assert head_dim % alignment == 0, f"head_dim must be divisible by {alignment}"
     assert head_dim_v % alignment == 0, f"head_dim_v must be divisible by {alignment}"
     if softmax_scale is None:
@@ -103,7 +105,8 @@ def _flash_attn_fwd(
     q_batch_seqlen_shape = (batch_size, seqlen_q) if cu_seqlens_q is None else (total_q,)
     out = torch.empty(*q_batch_seqlen_shape, num_head, head_dim_v, dtype=out_torch_dtype, device=device)
     lse_shape = (batch_size, num_head, seqlen_q) if cu_seqlens_q is None else (num_head, total_q)
-    lse = torch.empty(lse_shape, dtype=torch.float32, device=device)
+    requires_grad = q.requires_grad or k.requires_grad or v.requires_grad
+    lse = torch.empty(lse_shape, dtype=torch.float32, device=device) if requires_grad else None
 
     dtype = torch2cute_dtype_map[q.dtype]
     q_tensor, k_tensor, v_tensor, o_tensor = [
@@ -111,7 +114,7 @@ def _flash_attn_fwd(
             t.detach(), leading_dim=t.ndim - 1, divisibility=128 // dtype.width
         ) for t in (q, k, v, out)
     ]
-    lse_tensor = utils.convert_from_dlpack(lse, leading_dim=lse.ndim - 1, alignment=4)
+    lse_tensor = utils.convert_from_dlpack(lse, leading_dim=lse.ndim - 1, alignment=4) if lse is not None else None
     cu_seqlens_q_tensor, cu_seqlens_k_tensor, seqused_q_tensor, seqused_k_tensor = [
         from_dlpack(t.detach(), assumed_align=4).mark_layout_dynamic(leading_dim=0) if t is not None else None
         for t in (cu_seqlens_q, cu_seqlens_k, seqused_q, seqused_k)
@@ -119,27 +122,39 @@ def _flash_attn_fwd(
     max_seqlen_q = cutlass.Int32(max_seqlen_q) if max_seqlen_q is not None else None
     current_stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
 
+    compute_capability = torch.cuda.get_device_capability()[0] if _compute_capability is None else _compute_capability
+    assert compute_capability in [9, 10], "Unsupported compute capability. Supported: 9.x, 10.x"
     compile_key = (
         dtype, head_dim, head_dim_v, qhead_per_kvhead, causal, softcap != 0.0,
-        cu_seqlens_q is None, cu_seqlens_k is None, seqused_q is None, seqused_k is None,
-        m_block_size, n_block_size, num_threads
+        lse is None, cu_seqlens_q is None, cu_seqlens_k is None, seqused_q is None, seqused_k is None,
+        m_block_size, n_block_size, num_threads,
+        compute_capability,
     )
     if compile_key not in _flash_attn_fwd.compile_cache:
-        # fa_fwd = FlashAttentionForwardSm80(
-        fa_fwd = FlashAttentionForwardSm90(
-            dtype,
-            head_dim,
-            head_dim_v,
-            qhead_per_kvhead,
-            is_causal=causal,
-            has_softcap=softcap != 0.0,
-            m_block_size=m_block_size,
-            n_block_size=n_block_size,
-            # num_stages=1,
-            num_stages=2,
-            num_threads=num_threads,
-            Q_in_regs=False,
-        )
+        if compute_capability == 9:
+            # fa_fwd = FlashAttentionForwardSm80(
+            fa_fwd = FlashAttentionForwardSm90(
+                dtype,
+                head_dim,
+                head_dim_v,
+                qhead_per_kvhead,
+                is_causal=causal,
+                has_softcap=softcap != 0.0,
+                m_block_size=m_block_size,
+                n_block_size=n_block_size,
+                # num_stages=1,
+                num_stages=2,
+                num_threads=num_threads,
+                Q_in_regs=False,
+            )
+        else:
+            fa_fwd = FlashAttentionForwardSm100(
+                head_dim,
+                head_dim_v,
+                is_causal=causal,
+                qhead_per_kvhead=qhead_per_kvhead,
+                is_persistent=True,
+            )
         # TODO: check @can_implement
         _flash_attn_fwd.compile_cache[compile_key] = cute.compile(
             fa_fwd, q_tensor, k_tensor, v_tensor, o_tensor, lse_tensor,
@@ -195,7 +210,7 @@ def _flash_attn_bwd(
     assert all(t.is_cuda for t in (q, k, v, out, dout, lse)), "inputs must be on CUDA device"
     assert num_head % num_head_kv == 0, "num_head must be divisible by num_head_kv"
     assert head_dim <= 256, "head_dim must be less than or equal to 256"
-    alignment = 128 // q.element_size()
+    alignment = 16 // q.element_size()
     assert head_dim % alignment == 0, f"head_dim must be divisible by {alignment}"
     assert head_dim_v % alignment == 0, f"head_dim_v must be divisible by {alignment}"
     if softmax_scale is None:
