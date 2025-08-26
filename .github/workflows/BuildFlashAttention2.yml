@@ -83,7 +83,6 @@ jobs:
           echo "MATRIX_CUDA_VERSION=$cudaVersion" >> $env:GITHUB_ENV
           $torchVersion = "${{ inputs.torch_version }}" -replace '^(\d+\.\d+).*', '$1'
           if ("${{ inputs.torch_source }}".ToLower() -eq "nightly" -and "${{ inputs.torch_version }}".Trim() -eq "") {
-            # Leave MATRIX_TORCH_VERSION empty for nightly auto-latest naming
             $torchVersion = "nightly"
           }
           echo "MATRIX_TORCH_VERSION=$torchVersion" >> $env:GITHUB_ENV
@@ -133,19 +132,15 @@ jobs:
             $verArgs = @()
             
             if ($torchVerRaw) {
-              # Exact pin if provided
               $verArgs = @("torch==$torchVerRaw")
               if ("${{ inputs.include_torchvision }}".ToLower() -eq "true") {
-                # Attempt best-effort matching; omit pin if not given
                 if ($torchSource -eq "nightly") {
-                  # Leave torchvision unpinned on nightly unless user pins explicitly in torch_version
                   $verArgs += "torchvision"
                 } else {
                   $verArgs += "torchvision"
                 }
               }
             } else {
-              # Latest within channel
               $verArgs = $pkgs
             }
             
@@ -169,12 +164,7 @@ jobs:
           echo "TORCH_INSTALL_SOURCE=$torchSource" >> $env:GITHUB_ENV
           
           python -V
-          python -c @"
-import torch, sys
-print('CUDA (reported by torch):', torch.version.cuda)
-print('Is CUDA available?', torch.cuda.is_available())
-print('Arch list:', torch.cuda.get_arch_list())
-"@
+          python -c "import torch, sys; print('CUDA (reported by torch):', torch.version.cuda); print('Is CUDA available?', torch.cuda.is_available()); print('Arch list:', torch.cuda.get_arch_list())"
           
           # Optional consistency check: chosen channel vs torch.version.cuda
           $expected = switch -Regex ($chosenChan) {
@@ -185,10 +175,7 @@ print('Arch list:', torch.cuda.get_arch_list())
           }
           
           if ($expected) {
-            $torchCuda = python -c @"
-import torch
-print(torch.version.cuda or '')
-"@
+            $torchCuda = python -c "import torch; print(torch.version.cuda or '')"
             $torchCuda = $torchCuda.Trim()
             if (-not $torchCuda.StartsWith($expected)) {
               Write-Warning "Selected channel $chosenChan suggests CUDA $expected, but torch reports CUDA $torchCuda"
@@ -217,10 +204,7 @@ print(torch.version.cuda or '')
         run: |
           $ErrorActionPreference = "Stop"
           Write-Host "Verifying torch CUDA toolchain view:"
-          python -c @"
-from torch.utils import cpp_extension
-print('cpp_extension.CUDA_HOME:', cpp_extension.CUDA_HOME)
-"@
+          python -c "from torch.utils import cpp_extension; print('cpp_extension.CUDA_HOME:', cpp_extension.CUDA_HOME)"
           
           python -m build --wheel --outdir dist
           $wheel = Get-ChildItem -Path "dist\*.whl" | Select-Object -First 1
@@ -232,11 +216,7 @@ print('cpp_extension.CUDA_HOME:', cpp_extension.CUDA_HOME)
       - name: Install test (import flash_attn)
         run: |
           pip install "flash-attention\dist\$env:WHEEL_NAME"
-          python -c @"
-import flash_attn, sys
-print('flash_attn version:', getattr(flash_attn, '__version__', 'unknown'))
-print('Python:', sys.version)
-"@
+          python -c "import flash_attn, sys; print('flash_attn version:', getattr(flash_attn, '__version__', 'unknown')); print('Python:', sys.version)"
         shell: pwsh
       
       - name: Upload wheel artifact
