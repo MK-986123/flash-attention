@@ -81,12 +81,12 @@ jobs:
           NVCC_THREADS: "2"
           FLASH_ATTENTION_FORCE_BUILD: "TRUE"
         run: |
-          python - << 'PY'
-          from torch.utils import cpp_extension
-          print("cpp_extension.CUDA_HOME:", cpp_extension.CUDA_HOME)
-          PY
+          $pyCode = @"
+from torch.utils import cpp_extension
+print("cpp_extension.CUDA_HOME:", cpp_extension.CUDA_HOME)
+"@
+          python -c "$pyCode"
           python setup.py bdist_wheel --dist-dir=dist
-
           $baseWheelName = Get-ChildItem -Path "dist\*.whl" | Select-Object -First 1 | ForEach-Object { $_.Name }
           if (-not $baseWheelName) { throw "No wheel produced in dist" }
           $wheelName = $baseWheelName.Replace("${{ matrix.flash-attn-version }}", "${{ matrix.flash-attn-version }}+cu$env:MATRIX_CUDA_VERSION" + "torch$env:MATRIX_TORCH_VERSION")
