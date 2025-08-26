@@ -1,0 +1,248 @@
+name: "Build FlashAttention2 Windows (Py312, Torch selectable + CUDA, Ada Lovelace)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      torch_source:
+        description: "PyTorch source channel"
+        type: choice
+        required: true
+        default: stable
+        options:
+          - stable
+          - nightly
+      torch_version:
+        description: "PyTorch version (ignored if nightly and left empty). Example: 2.8.0 or 2.9.0.dev20250822+cu128"
+        type: string
+        required: false
+        default: "2.8.0"
+      cuda_toolkit_version:
+        description: "CUDA Toolkit to install via Jimver/cuda-toolkit. Match your target CUDA channel (e.g., 12.8.1 for cu128, 13.0.x for cu130)"
+        type: string
+        required: true
+        default: "12.8.1"
+      cuda_channels:
+        description: "Comma-separated CUDA channel(s) to try in order (e.g., cu128,cu130 or cu128,cu129,cu130)"
+        type: string
+        required: true
+        default: "cu128,cu126,cu124,cu121"
+      include_torchvision:
+        description: "Also install torchvision alongside torch"
+        type: boolean
+        required: true
+        default: false
+
+concurrency:
+  group: build-flashattn2-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build_wheels:
+    name: Build wheels and Upload
+    runs-on: windows-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        flash-attn-version: ["2.8.3"]
+        python-version: ["3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Enable Git long paths
+        run: git config --global core.longpaths true
+        shell: pwsh
+
+      - name: Enable MSVC Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install CUDA Toolkit ${{ inputs.cuda_toolkit_version }}
+        uses: Jimver/cuda-toolkit@v0.2.24
+        with:
+          cuda: ${{ inputs.cuda_toolkit_version }}
+          method: "network"
+          use-github-cache: false
+
+      - name: Show CUDA environment
+        run: |
+          echo "CUDA_PATH=$env:CUDA_PATH"
+          echo "NVCC location:"
+          where nvcc
+          nvcc --version
+        shell: pwsh
+
+      - name: Set CUDA/Torch versions (for naming)
+        run: |
+          $cudaVersion = "${{ inputs.cuda_toolkit_version }}" -replace '\.', ''
+          $cudaVersion = $cudaVersion.Substring(0, [Math]::Min(3, $cudaVersion.Length))
+          echo "MATRIX_CUDA_VERSION=$cudaVersion" >> $env:GITHUB_ENV
+          $torchVersion = "${{ inputs.torch_version }}" -replace '^(\d+\.\d+).*', '$1'
+          if ("${{ inputs.torch_source }}".ToLower() -eq "nightly" -and "${{ inputs.torch_version }}".Trim() -eq "") {
+            # Leave MATRIX_TORCH_VERSION empty for nightly auto-latest naming
+            $torchVersion = "nightly"
+          }
+          echo "MATRIX_TORCH_VERSION=$torchVersion" >> $env:GITHUB_ENV
+          echo "TORCH_SOURCE=${{ inputs.torch_source }}" >> $env:GITHUB_ENV
+        shell: pwsh
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Upgrade build tooling
+        run: |
+          python -m pip install -U pip setuptools wheel build packaging
+          pip install ninja cmake
+        shell: pwsh
+
+      - name: Install PyTorch (${{ inputs.torch_source }}) with CUDA channel(s)
+        run: |
+          $ErrorActionPreference = "Stop"
+          $torchSource = "${{ inputs.torch_source }}".ToLower()
+          $torchVerRaw = "${{ inputs.torch_version }}".Trim()
+          $channels = @()
+          foreach ($part in "${{ inputs.cuda_channels }}".Split(",")) {
+            $c = $part.Trim()
+            if ($c) { $channels += $c }
+          }
+          if ($channels.Count -eq 0) { throw "No CUDA channels provided" }
+
+          # Clean possible previous installs
+          pip uninstall -y torch torchvision torchaudio `
+            nvidia-cublas-cu12 nvidia-cuda-runtime-cu12 nvidia-cudnn-cu12 `
+            nvidia-cusolver-cu12 nvidia-cusparse-cu12 nvidia-nvtx-cu12 `
+            nvidia-cuda-nvrtc-cu12 nvidia-cufft-cu12 nvidia-curand-cu12 `
+            nvidia-cuda-cupti-cu12 2>$null | Out-Null
+
+          $pipArgs = @("--no-cache-dir", "-U")
+          $preArg = @()
+          $pkgs = @("torch")
+          if ("${{ inputs.include_torchvision }}".ToLower() -eq "true") { $pkgs += "torchvision" }
+
+          $installed = $false
+          $chosenChan = ""
+          foreach ($chan in $channels) {
+            $indexBase = if ($torchSource -eq "nightly") { "https://download.pytorch.org/whl/nightly/$chan" } else { "https://download.pytorch.org/whl/$chan" }
+            $preArg = if ($torchSource -eq "nightly") { @("--pre") } else { @() }
+
+            $verArgs = @()
+            if ($torchVerRaw) {
+              # Exact pin if provided
+              $verArgs = @("torch==$torchVerRaw")
+              if ("${{ inputs.include_torchvision }}".ToLower() -eq "true") {
+                # Attempt best-effort matching; omit pin if not given
+                if ($torchSource -eq "nightly") {
+                  # Leave torchvision unpinned on nightly unless user pins explicitly in torch_version
+                  $verArgs += "torchvision"
+                } else {
+                  $verArgs += "torchvision"
+                }
+              }
+            } else {
+              # Latest within channel
+              $verArgs = $pkgs
+            }
+
+            Write-Host "Attempting to install from: $indexBase"
+            try {
+              pip install @preArg @pipArgs @verArgs --index-url $indexBase --extra-index-url https://pypi.org/simple
+              $installed = $true
+              $chosenChan = $chan
+              break
+            } catch {
+              Write-Warning "Failed installing from $indexBase. Trying next channel if any..."
+              continue
+            }
+          }
+          if (-not $installed) {
+            throw "Unable to install torch ($torchSource) from channels: $(${channels -join ', '})"
+          }
+          echo "TORCH_INSTALL_CHANNEL=$chosenChan" >> $env:GITHUB_ENV
+          echo "TORCH_INSTALL_SOURCE=$torchSource" >> $env:GITHUB_ENV
+
+          python -V
+          python - << 'PY'
+import torch, sys
+print("PyTorch:", torch.__version__)
+print("CUDA (reported by torch):", torch.version.cuda)
+print("Is CUDA available?", torch.cuda.is_available())
+print("Arch list:", torch.cuda.get_arch_list())
+PY
+
+          # Optional consistency check: chosen channel vs torch.version.cuda
+          $expected = switch -Regex ($chosenChan) {
+            "cu128" { "12.8" }
+            "cu129" { "12.9" }
+            "cu130" { "13.0" }
+            default  { "" }
+          }
+          if ($expected) {
+            $torchCuda = python - << 'PY'
+import torch
+print(torch.version.cuda or "")
+PY
+            $torchCuda = $torchCuda.Trim()
+            if (-not $torchCuda.StartsWith($expected)) {
+              Write-Warning "Selected channel $chosenChan suggests CUDA $expected, but torch reports CUDA $torchCuda"
+            }
+          }
+        shell: pwsh
+
+      - name: Checkout flash-attn v${{ matrix.flash-attn-version }}
+        run: |
+          if (Test-Path flash-attention) { Remove-Item -Recurse -Force flash-attention }
+          git clone https://github.com/Dao-AILab/flash-attention.git -b "v${{ matrix.flash-attn-version }}" --recurse-submodules --depth 1
+        shell: pwsh
+
+      - name: Build FlashAttention2 wheel (Ada Lovelace sm_89)
+        working-directory: flash-attention
+        env:
+          FORCE_CUDA: "1"
+          TORCH_CUDA_ARCH_LIST: "8.9"
+          CUDA_HOME: "${{ env.CUDA_PATH }}"
+          CUDA_PATH: "${{ env.CUDA_PATH }}"
+          CUDACXX: "${{ env.CUDA_PATH }}\\bin\\nvcc.exe"
+          MAX_JOBS: "2"
+          CMAKE_BUILD_PARALLEL_LEVEL: "2"
+          NVCC_THREADS: "2"
+          FLASH_ATTENTION_FORCE_BUILD: "1"
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "Verifying torch CUDA toolchain view:"
+          python - << 'PY'
+from torch.utils import cpp_extension
+print("cpp_extension.CUDA_HOME:", cpp_extension.CUDA_HOME)
+PY
+
+          python -m build --wheel --outdir dist
+
+          $wheel = Get-ChildItem -Path "dist\*.whl" | Select-Object -First 1
+          if (-not $wheel) { throw "No wheel produced in dist" }
+          echo "WHEEL_NAME=$($wheel.Name)" >> $env:GITHUB_ENV
+
+          Write-Host "Built wheel: $($wheel.Name)"
+        shell: pwsh
+
+      - name: Install test (import flash_attn)
+        run: |
+          pip install "flash-attention\dist\$env:WHEEL_NAME"
+          python - << 'PY'
+import flash_attn, sys
+print('flash_attn version:', getattr(flash_attn, '__version__', 'unknown'))
+print('Python:', sys.version)
+PY
+        shell: pwsh
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flash_attn_win_py${{ matrix.python-version }}_${{ env.TORCH_INSTALL_SOURCE }}_${{ env.TORCH_INSTALL_CHANNEL }}_torch${{ env.MATRIX_TORCH_VERSION }}
+          path: flash-attention/dist/*.whl
