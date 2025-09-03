@@ -39,6 +39,15 @@ jobs:
           echo "CUDA_SHORT=$(echo ${CUDA_VERSION} | tr -d .)" >> "$GITHUB_ENV"
           echo "_GLIBCXX_USE_CXX11_ABI=${CXX11_ABI}" >> "$GITHUB_ENV"
 
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-py${{ env.PYTAG }}-torch${{ env.TORCH_VERSION }}-cu130
+          restore-keys: |
+            ${{ runner.os }}-pip-py${{ env.PYTAG }}-
+            ${{ runner.os }}-pip-
+
       - name: Free disk space (Linux)
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
@@ -57,9 +66,21 @@ jobs:
           cuda: "13.0.0"
           method: network
 
+      # Install torch before validation to fix "ModuleNotFoundError: No module named 'torch'"
+      - name: Install PyTorch (binary) for validation
+        run: |
+          python -m pip install --upgrade pip
+          # Use the CUDA 13.0 index explicitly (cu130) for the specified dev build
+          python -m pip install "torch==${TORCH_VERSION}" --extra-index-url https://download.pytorch.org/whl/cu130
+
       - name: Validate PyTorch and CUDA
         run: |
           python -c "import torch; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available()); print('CUDA version attr:', getattr(torch.version, 'cuda', None))"
+
+      # Optional: remove the binary torch to avoid any interference with source build below
+      - name: Uninstall validation PyTorch
+        run: |
+          python -m pip uninstall -y torch || true
 
       # Add your custom dependency installation and build commands below
       - name: Install build dependencies
@@ -76,6 +97,7 @@ jobs:
           export USE_CUDA=1
           export USE_CUDNN=1
           export USE_MKLDNN=1
+          export MAX_JOBS=$(nproc)
           python setup.py bdist_wheel
 
       - name: Upload built wheel
@@ -83,4 +105,3 @@ jobs:
         with:
           name: pytorch-wheel
           path: pytorch/dist/*.whl
-          
