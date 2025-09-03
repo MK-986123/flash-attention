@@ -52,7 +52,7 @@ jobs:
 
       - name: Install CUDA 13.0 toolkit
         id: cuda
-        uses: Jimver/cuda-toolkit@v0.2.26
+        uses: Jimver/cuda-toolkit@v0.2.27
         with:
           cuda: "13.0"
           method: network
