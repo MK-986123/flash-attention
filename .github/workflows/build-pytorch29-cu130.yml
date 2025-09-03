@@ -17,7 +17,7 @@ on:
         description: "The CUDA version to use for the build"
         required: true
         type: string
-        default: "13.0.0"
+        default: "13.0"
       torch-version:
         description: "The PyTorch version to use for the build"
         required: true
