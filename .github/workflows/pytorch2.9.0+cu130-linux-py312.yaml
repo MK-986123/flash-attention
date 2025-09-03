@@ -15,10 +15,11 @@ jobs:
     env:
       PYTHON_VERSION: "3.12"
       CUDA_VERSION: "13.0.0"
+      CUDNN_VERSION: "9.0"  # Added CUDNN version
       CXX11_ABI: "1"
       TORCH_CUDA_ARCH_LIST: "8.9" # Ada Lovelace (RTX 40 series)
-      MAX_JOBS: "4"  # Fixed value instead of runner.cpu
-      NVCC_THREADS: "4"  # Fixed value instead of runner.cpu
+      MAX_JOBS: "4"
+      NVCC_THREADS: "4"
       _GLIBCXX_USE_CXX11_ABI: "1"
       TORCH_WHEEL_URL: "https://download.pytorch.org/whl/nightly/cu130/torch-2.9.0.dev20250903%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl"
 
@@ -49,7 +50,6 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
           sudo apt-get purge -y -f qt5-doc qtbase5-doc || true
           sudo docker image prune -af || true
-          # Report available space
           df -h
 
       - name: Set up max swap (Linux)
@@ -63,15 +63,33 @@ jobs:
           cuda: "13.0.0"
           method: network
 
-      - name: Set CUDA environment variables
+      - name: Install CUDNN 9
+        run: |
+          # Add NVIDIA repository (should already be added from CUDA installation)
+          sudo apt-get update
+          
+          # Install CUDNN 9
+          sudo apt-get install -y --no-install-recommends \
+            libcudnn9 \
+            libcudnn9-dev
+          
+          # Verify CUDNN installation
+          ls -la /usr/lib/x86_64-linux-gnu/libcudnn*
+
+      - name: Set CUDA and CUDNN environment variables
         run: |
           echo "CUDA_HOME=/usr/local/cuda-13.0" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=/usr/local/cuda-13.0/lib64:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=/usr/local/cuda-13.0/lib64:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
           echo "PATH=/usr/local/cuda-13.0/bin:${PATH}" >> $GITHUB_ENV
           
           # Verify CUDA installation
           nvcc --version
           ls -la /usr/local/cuda-13.0/lib64/ | head
+          
+          # Create symlinks for CUDNN if needed
+          if [ ! -f /usr/local/cuda-13.0/lib64/libcudnn.so.9 ] && [ -f /usr/lib/x86_64-linux-gnu/libcudnn.so.9 ]; then
+            sudo ln -sf /usr/lib/x86_64-linux-gnu/libcudnn.so.9 /usr/local/cuda-13.0/lib64/libcudnn.so.9
+          fi
 
       - name: Download and Install PyTorch
         run: |
@@ -90,11 +108,17 @@ jobs:
 
       - name: Validate PyTorch and CUDA
         run: |
-          # Detailed validation with explicit error handling
-          python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda}'); print(f'Device count: {torch.cuda.device_count()}')"
+          # Print key environment variables for debugging
+          echo "LD_LIBRARY_PATH: ${LD_LIBRARY_PATH}"
+          echo "CUDA_HOME: ${CUDA_HOME}"
           
-          # Additional filesystem checks to ensure CUDA is properly linked
-          python -c "import torch; print(f'Library path: {torch.__file__}'); import os; print(f'CUDA libraries visible: {os.path.exists(\"/usr/local/cuda-13.0/lib64/libcudart.so\")}')"
+          # Check if required libraries exist
+          echo "CUDA Libraries:"
+          find /usr -name "libcudnn.so.9" || echo "libcudnn.so.9 not found"
+          find /usr -name "libcudart.so*" || echo "libcudart not found"
+          
+          # Try to import torch - this should work now with CUDNN installed
+          python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda}')"
 
       - name: Install build dependencies
         run: |
@@ -104,7 +128,7 @@ jobs:
         run: |
           # Export critical environment variables again to be sure
           export CUDA_HOME=/usr/local/cuda-13.0
-          export LD_LIBRARY_PATH=/usr/local/cuda-13.0/lib64:${LD_LIBRARY_PATH}
+          export LD_LIBRARY_PATH=/usr/local/cuda-13.0/lib64:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}
           export PATH=/usr/local/cuda-13.0/bin:${PATH}
           export TORCH_CUDA_ARCH_LIST="8.9"
           export _GLIBCXX_USE_CXX11_ABI="1"
@@ -112,6 +136,7 @@ jobs:
           # Print critical build environment info
           echo "Build environment:"
           echo "CUDA_HOME: $CUDA_HOME"
+          echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
           echo "TORCH_CUDA_ARCH_LIST: $TORCH_CUDA_ARCH_LIST"
           echo "Python: $(which python)"
           echo "NVCC: $(which nvcc)"
@@ -150,4 +175,4 @@ jobs:
         with:
           name: flash-attn-wheel
           path: dist/*.whl
-          if-no-files-found: error  # Fail if no wheel is produced
+          if-no-files-found: error
