@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PYTHON_VERSION: "3.12"
-      CUDA_VERSION: "13.0"
+      CUDA_VERSION: "13.0.0"
       TORCH_VERSION: "2.9.0.dev"
       CXX11_ABI: "1"
 
@@ -50,11 +50,11 @@ jobs:
         with:
           swap-size-gb: 12
 
-      - name: Install CUDA 13.0 toolkit
+      - name: Install CUDA 13.0.0 toolkit
         id: cuda
         uses: Jimver/cuda-toolkit@v0.2.27
         with:
-          cuda: "13.0"
+          cuda: "13.0.0"
           method: network
 
       - name: Validate PyTorch and CUDA
