@@ -1,4 +1,4 @@
-name: pytorch2.9.0+cu130-linux-py312
+name: Build Flash Attention Wheel (Ultra-Parallel, GitHub Actions, September 2025)
 
 on:
   workflow_dispatch:
@@ -15,14 +15,17 @@ jobs:
     env:
       PYTHON_VERSION: "3.12"
       CUDA_VERSION: "13.0.0"
-      TORCH_VERSION: "2.9.0.dev"
       CXX11_ABI: "1"
+      TORCH_CUDA_ARCH_LIST: "8.9" # Ada Lovelace (RTX 40 series)
+      MAX_JOBS: ${{ runner.cpu }}
+      NVCC_THREADS: ${{ runner.cpu }}
+      _GLIBCXX_USE_CXX11_ABI: "1"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -30,78 +33,120 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
-      - name: Derive env
-        id: derive
-        run: |
-          PYTAG="${PYTHON_VERSION/./}"              # 3.12 -> 312
-          echo "PYTAG=$PYTAG" >> "$GITHUB_ENV"
-          echo "TORCH_BASE=$(echo ${TORCH_VERSION} | awk -F. '{print $1"."$2}')" >> "$GITHUB_ENV"
-          echo "CUDA_SHORT=$(echo ${CUDA_VERSION} | tr -d .)" >> "$GITHUB_ENV"
-          echo "_GLIBCXX_USE_CXX11_ABI=${CXX11_ABI}" >> "$GITHUB_ENV"
-
-      - name: Cache pip packages
+      - name: Cache pip packages and wheels
         uses: actions/cache@v4
         with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-py${{ env.PYTAG }}-torch${{ env.TORCH_VERSION }}-cu130
+          path: |
+            ~/.cache/pip
+            ./dist/*.whl
+          key: ${{ runner.os }}-pip-py${{ env.PYTHON_VERSION }}-torch-2.9.0.dev20250903-cu130
           restore-keys: |
-            ${{ runner.os }}-pip-py${{ env.PYTAG }}-
-            ${{ runner.os }}-pip-
+            ${{ runner.os }}-pip-py${{ env.PYTHON_VERSION }}-
 
-      - name: Free disk space (Linux)
+      - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
           sudo apt-get purge -y -f qt5-doc qtbase5-doc || true
           sudo docker image prune -af || true
+          # Report available space
+          df -h
 
-      - name: Set up swap (Linux)
+      - name: Set up max swap (Linux)
         uses: pierotofy/set-swap-space@v1.0
         with:
           swap-size-gb: 12
 
-      - name: Install CUDA 13.0.0 toolkit
-        id: cuda
+      - name: Install CUDA 13.0.0
         uses: Jimver/cuda-toolkit@v0.2.27
         with:
           cuda: "13.0.0"
           method: network
 
-      # Install torch before validation to fix "ModuleNotFoundError: No module named 'torch'"
-      - name: Install PyTorch (binary) for validation
+      - name: Set CUDA environment variables
         run: |
-          python -m pip install --upgrade pip
-          # Use the CUDA 13.0 index explicitly (cu130) for the specified dev build
-          python -m pip install "torch==${TORCH_VERSION}" --extra-index-url https://download.pytorch.org/whl/cu130
+          echo "CUDA_HOME=/usr/local/cuda-13.0" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=/usr/local/cuda-13.0/lib64:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
+          echo "PATH=/usr/local/cuda-13.0/bin:${PATH}" >> $GITHUB_ENV
+          
+          # Verify CUDA installation
+          nvcc --version
+          ls -la /usr/local/cuda-13.0/lib64/ | head
+
+      - name: Download and Install PyTorch
+        run: |
+          # First ensure pip is upgraded
+          python -m pip install --upgrade pip setuptools wheel
+          
+          # Download and install the exact PyTorch wheel - hardcoded URL
+          wget -O /tmp/torch-wheel.whl "https://download.pytorch.org/whl/nightly/cu130/torch-2.9.0.dev20250903%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl"
+          ls -la /tmp/torch-wheel.whl
+          
+          # Install the wheel with --no-deps to avoid dependency resolution issues
+          python -m pip install --no-deps /tmp/torch-wheel.whl
+          
+          # Now install additional PyTorch dependencies that might be needed
+          python -m pip install typing_extensions sympy filelock fsspec
 
       - name: Validate PyTorch and CUDA
         run: |
-          python -c "import torch; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available()); print('CUDA version attr:', getattr(torch.version, 'cuda', None))"
+          # Detailed validation with explicit error handling
+          python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda}'); print(f'Device count: {torch.cuda.device_count()}')"
+          
+          # Additional filesystem checks to ensure CUDA is properly linked
+          python -c "import torch; print(f'Library path: {torch.__file__}'); import os; print(f'CUDA libraries visible: {os.path.exists(\"/usr/local/cuda-13.0/lib64/libcudart.so\")}')"
 
-      # Optional: remove the binary torch to avoid any interference with source build below
-      - name: Uninstall validation PyTorch
-        run: |
-          python -m pip uninstall -y torch || true
-
-      # Add your custom dependency installation and build commands below
       - name: Install build dependencies
         run: |
-          python -m pip install --upgrade pip setuptools wheel ninja cmake
+          python -m pip install --upgrade ninja cmake packaging pybind11
 
-      - name: Build PyTorch wheel
+      - name: Build flash-attention wheel with verbose logging
         run: |
-          git clone --recursive https://github.com/pytorch/pytorch
-          cd pytorch
-          git checkout v2.9.0
-          git submodule sync
-          git submodule update --init --recursive --jobs 0
-          export USE_CUDA=1
-          export USE_CUDNN=1
-          export USE_MKLDNN=1
-          export MAX_JOBS=$(nproc)
-          python setup.py bdist_wheel
+          # Export critical environment variables again to be sure
+          export CUDA_HOME=/usr/local/cuda-13.0
+          export LD_LIBRARY_PATH=/usr/local/cuda-13.0/lib64:${LD_LIBRARY_PATH}
+          export PATH=/usr/local/cuda-13.0/bin:${PATH}
+          export TORCH_CUDA_ARCH_LIST="8.9"
+          export _GLIBCXX_USE_CXX11_ABI="1"
+          
+          # Print critical build environment info
+          echo "Build environment:"
+          echo "CUDA_HOME: $CUDA_HOME"
+          echo "TORCH_CUDA_ARCH_LIST: $TORCH_CUDA_ARCH_LIST"
+          echo "Python: $(which python)"
+          echo "NVCC: $(which nvcc)"
+          
+          # Build the wheel with maximum verbosity and save log
+          python setup.py bdist_wheel --verbose 2>&1 | tee build.log
+          
+          # List the resulting wheel
+          ls -la dist/
 
-      - name: Upload built wheel
+      - name: Upload build log
         uses: actions/upload-artifact@v4
         with:
-          name: pytorch-wheel
-          path: pytorch/dist/*.whl
+          name: flash-attn-build-log-${{ env.PYTHON_VERSION }}-torch-2.9.0.dev20250903-cu130
+          path: build.log
+          if-no-files-found: error
+
+      - name: Verify wheel contents
+        run: |
+          WHEEL_PATH=$(ls dist/*.whl)
+          echo "Built wheel: $WHEEL_PATH"
+          
+          # Check what's inside the wheel
+          python -m pip install wheel
+          python -m wheel unpack $WHEEL_PATH -d /tmp/wheel-contents
+          
+          # Look for compiled extensions
+          find /tmp/wheel-contents -name "*.so" | xargs ls -la
+          
+          # Try to install the wheel
+          python -m pip install --force-reinstall $WHEEL_PATH
+          python -c "import flash_attn; print(f'Flash Attention installed successfully: {flash_attn.__version__}')"
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flash-attn-wheel
+          path: dist/*.whl
+          if-no-files-found: error  # Fail if no wheel is produced
