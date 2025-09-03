@@ -504,6 +504,16 @@ We also include a training
 [script](https://github.com/Dao-AILab/flash-attention/tree/main/training) to
 train GPT2 on Openwebtext and GPT3 on The Pile.
 
+## Automated builds and workflows
+
+We provide GitHub Actions workflows for building FlashAttention wheels with different configurations. For PyTorch 2.9.0 development builds with CUDA 13.0, you can use the dedicated workflow:
+
+1. Go to the [Actions tab](../../actions) in this repository
+2. Select "Build PyTorch 2.9.0 + CUDA 13.0 wheel"
+3. Click "Run workflow" and configure parameters as needed
+
+This is useful for testing with the latest PyTorch development builds. See [.github/workflows/README.md](.github/workflows/README.md) for complete documentation on available workflows and usage instructions.
+
 ## Triton implementation of FlashAttention
 
 Phil Tillet (OpenAI) has an experimental implementation of FlashAttention in Triton:
