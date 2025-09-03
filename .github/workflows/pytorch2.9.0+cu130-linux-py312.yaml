@@ -20,6 +20,7 @@ jobs:
       MAX_JOBS: "4"  # Fixed value instead of runner.cpu
       NVCC_THREADS: "4"  # Fixed value instead of runner.cpu
       _GLIBCXX_USE_CXX11_ABI: "1"
+      TORCH_WHEEL_URL: "https://download.pytorch.org/whl/nightly/cu130/torch-2.9.0.dev20250903%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl"
 
     steps:
       - name: Checkout
@@ -77,12 +78,12 @@ jobs:
           # First ensure pip is upgraded
           python -m pip install --upgrade pip setuptools wheel
           
-          # Download and install the exact PyTorch wheel - hardcoded URL
-          wget -O /tmp/torch-wheel.whl "https://download.pytorch.org/whl/nightly/cu130/torch-2.9.0.dev20250903%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl"
-          ls -la /tmp/torch-wheel.whl
+          # Download the wheel without renaming it
+          cd /tmp
+          wget "${{ env.TORCH_WHEEL_URL }}"
           
-          # Install the wheel with --no-deps to avoid dependency resolution issues
-          python -m pip install --no-deps /tmp/torch-wheel.whl
+          # Install the wheel directly from the downloaded file
+          python -m pip install --no-deps /tmp/torch-2.9.0.dev20250903+cu130-cp312-cp312-manylinux_2_28_x86_64.whl
           
           # Now install additional PyTorch dependencies that might be needed
           python -m pip install typing_extensions sympy filelock fsspec
