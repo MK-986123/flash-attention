@@ -17,8 +17,8 @@ jobs:
       CUDA_VERSION: "13.0.0"
       CXX11_ABI: "1"
       TORCH_CUDA_ARCH_LIST: "8.9" # Ada Lovelace (RTX 40 series)
-      MAX_JOBS: ${{ runner.cpu }}
-      NVCC_THREADS: ${{ runner.cpu }}
+      MAX_JOBS: "4"  # Fixed value instead of runner.cpu
+      NVCC_THREADS: "4"  # Fixed value instead of runner.cpu
       _GLIBCXX_USE_CXX11_ABI: "1"
 
     steps:
