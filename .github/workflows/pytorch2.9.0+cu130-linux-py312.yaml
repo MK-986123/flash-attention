@@ -4,99 +4,172 @@ on:
   workflow_call:
     inputs:
       runs-on:
-        description: "The runner to use for the build"
+        description: The runner to use for the build
         required: true
         type: string
-        default: "ubuntu-latest"
+        default: ubuntu-latest
       python-version:
-        description: "The Python version to use for the build"
+        description: The Python version to use for the build
         required: true
         type: string
         default: "3.12"
       cuda-version:
-        description: "The CUDA version to use for the build"
+        description: CUDA version (e.g., 12.4, 13.0) or "cpu"
         required: true
         type: string
-        default: "13.0.0"
+        default: "13.0"
       torch-version:
-        description: "The PyTorch version to use for the build"
+        description: PyTorch version (e.g., 2.9.0.dev or 2.4.1)
         required: true
         type: string
         default: "2.9.0.dev"
       cxx11_abi:
-        description: "The C++11 ABI to use for the build"
+        description: GLIBCXX11 ABI (0 or 1) for building extensions
         required: true
         type: string
         default: "1"
       upload-to-release:
-        description: "Upload wheel to this release"
+        description: Upload built wheels to a GitHub Release if true
         required: false
         type: boolean
         default: false
       release-version:
-        description: "Upload wheel to this release"
+        description: Tag/branch to checkout; leave empty to use default branch
         required: false
         type: string
 
 defaults:
   run:
-    shell: bash -x -e -u -o pipefail {0}
+    shell: bash
 
 jobs:
   build-wheel:
     runs-on: ${{ inputs.runs-on }}
-    name: Build wheel (${{ inputs.release-version }}-${{ inputs.python-version }}-${{ inputs.cuda-version }}-${{ inputs.torch-version }}-${{ inputs.cxx11_abi }})
+    name: Build wheel (${{ inputs.release-version || 'HEAD' }}-${{ inputs.python-version }}-${{ inputs.cuda-version }}-${{ inputs.torch-version }}-abi${{ inputs.cxx11_abi }})
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release-version }}
+          ref: ${{ inputs.release-version != '' && inputs.release-version || '' }}
           submodules: recursive
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python-version }}
+          cache: pip
 
-      - name: Set CUDA and PyTorch versions
+      - name: Derive matrix env
         run: |
-          echo "MATRIX_CUDA_VERSION=$(echo ${{ inputs.cuda-version }} | awk -F \. {'print $1 $2'})" >> $GITHUB_ENV
-          echo "MATRIX_TORCH_VERSION=$(echo ${{ inputs.torch-version }} | awk -F \. {'print $1 "." $2'})" >> $GITHUB_ENV
-          echo "WHEEL_CUDA_VERSION=$(echo ${{ inputs.cuda-version }} | awk -F \. {'print $1'})" >> $GITHUB_ENV
-          echo "MATRIX_PYTHON_VERSION=$(echo ${{ inputs.python-version }} | awk -F \. {'print $1 $2'})" >> $GITHUB_ENV
+          PYV="${{ inputs.python-version }}"
+          CUDAV="${{ inputs.cuda-version }}"
+          TORCHV="${{ inputs.torch-version }}"
 
-      - name: Free up disk space
+          # cp tag like 3.12 -> 312
+          PYTAG="${PYV/./}"
+          echo "MATRIX_PYTHON_TAG=${PYTAG}" >> "$GITHUB_ENV"
+
+          # CUDA major+minor like 13.0 -> 130, 12.4 -> 124; or 'cpu'
+          if [ "${CUDAV}" = "cpu" ]; then
+            echo "CUDA_SHORT=cpu" >> "$GITHUB_ENV"
+            echo "TORCH_CUDA_CHANNEL=cpu" >> "$GITHUB_ENV"
+          else
+            CUMAJ="${CUDAV%%.*}"
+            CUMIN="${CUDAV#*.}"
+            echo "CUDA_SHORT=${CUMAJ}${CUMIN}" >> "$GITHUB_ENV"
+            echo "TORCH_CUDA_CHANNEL=cu${CUMAJ}${CUMIN}" >> "$GITHUB_ENV"
+          fi
+
+          # Torch base (2.9.0.dev -> 2.9; 2.4.1 -> 2.4)
+          echo "${TORCHV}" | awk -F. '{print "TORCH_BASE="$1"."$2}' >> "$GITHUB_ENV"
+
+          echo "CXX11_ABI=${{ inputs.cxx11_abi }}" >> "$GITHUB_ENV"
+
+      - name: Free up disk space (Linux)
         if: ${{ runner.os == 'Linux' }}
         run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo apt-get purge -y -f qt5-doc qtbase5-doc
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get purge -y -f qt5-doc qtbase5-doc || true
+          sudo docker image prune -af || true
 
-      - name: Set up swap space
-        if: runner.os == 'Linux'
+      - name: Set up swap (Linux)
+        if: ${{ runner.os == 'Linux' }}
         uses: pierotofy/set-swap-space@v1.0
         with:
           swap-size-gb: 12
 
-      - name: Install CUDA ${{ inputs.cuda-version }}
-        if: ${{ inputs.cuda-version != 'cpu' }}
+      - name: Install CUDA toolkit (Linux, CUDA only)
+        if: ${{ runner.os == 'Linux' && inputs.cuda-version != 'cpu' }}
+        id: cuda
         uses: Jimver/cuda-toolkit@v0.2.26
-        id: cuda-toolkit
         with:
           cuda: ${{ inputs.cuda-version }}
+          method: network
+          # include compiler + core dev libs needed by common PyTorch extensions
+          sub-packages: '["cuda-toolkit","cuda-compiler","cuda-libraries-dev","cuda-nvrtc-dev"]'
           linux-local-args: '["--toolkit"]'
-          method: "network"
-          sub-packages: '["nvcc"]'
+
+      - name: Export CUDA env (Linux, CUDA only)
+        if: ${{ runner.os == 'Linux' && inputs.cuda-version != 'cpu' }}
+        run: |
+          echo "CUDA_HOME=${{ steps.cuda.outputs.CUDA_PATH }}" >> "$GITHUB_ENV"
+          echo "${{ steps.cuda.outputs.CUDA_PATH }}/bin" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=${{ steps.cuda.outputs.CUDA_PATH }}/lib64:${LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
+      - name: Upgrade build tooling
+        run: |
+          python -m pip install -U pip wheel build packaging typing-extensions==4.12.2
 
       - name: Install PyTorch ${{ inputs.torch-version }}
         run: |
-          pip install --upgrade pip
-          pip install typing-extensions==4.12.2
-          export TORCH_CUDA_VERSION=130
-          pip install --no-cache-dir --pre https://download.pytorch.org/whl/nightly/cu${TORCH_CUDA_VERSION}/torch-${{ inputs.torch-version }}%2Bcu${TORCH_CUDA_VERSION}-cp${MATRIX_PYTHON_VERSION}-cp${MATRIX_PYTHON_VERSION}-linux_x86_64.whl
-          pip install --no-cache-dir --pre https://download.pytorch.org/whl/nightly/pytorch_triton-3.1.0%2Bcf34004b8a-cp${MATRIX_PYTHON_VERSION}-cp${MATRIX_PYTHON_VERSION}-linux_x86_64.whl
-          nvcc --version
+          set -euo pipefail
+          PYTAG="${MATRIX_PYTHON_TAG}"
+          TORCHV="${{ inputs.torch-version }}"
+          CHANNEL="${TORCH_CUDA_CHANNEL}"  # cpu or cuXYZ
+
+          # Decide index: nightly vs stable
+          if [[ "${TORCHV}" == *"dev"* || "${TORCHV}" == *"nightly"* ]]; then
+            BASE_URL="https://download.pytorch.org/whl/nightly/${CHANNEL}"
+          else
+            BASE_URL="https://download.pytorch.org/whl/${CHANNEL}"
+          fi
+
+          if [[ "${CHANNEL}" == "cpu" ]]; then
+            # CPU wheel
+            pip install --no-cache-dir --pre "${BASE_URL}/torch-${TORCHV}%2Bcpu-cp${PYTAG}-cp${PYTAG}-linux_x86_64.whl"
+          else
+            # CUDA wheel
+            pip install --no-cache-dir --pre "${BASE_URL}/torch-${TORCHV}%2B${CHANNEL}-cp${PYTAG}-cp${PYTAG}-linux_x86_64.whl"
+          fi
+
+          # Optional: torchvision/torchaudio to match major.minor
+          pip install --no-cache-dir --pre --index-url "${BASE_URL%/*}" "torchvision==${TORCH_BASE}.*" "torchaudio==${TORCH_BASE}.*" || true
+
+          # Triton note: modern torch bundles triton; skip separate pytorch_triton to avoid mismatches
+
+      - name: Build wheel
+        env:
+          _GLIBCXX_USE_CXX11_ABI: ${{ env.CXX11_ABI }}
+        run: |
+          python -m build --wheel
+          mkdir -p dist_out
+          cp -v dist/*.whl dist_out/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ inputs.release-version || 'HEAD' }}-py${{ inputs.python-version }}-${{ inputs.cuda-version }}-torch${{ inputs.torch-version }}-abi${{ inputs.cxx11_abi }}
+          path: dist_out/*.whl
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload to Release
+        if: ${{ inputs.upload-to-release == true && inputs.release-version != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release-version }}
+          files: dist_out/*.whl          nvcc --version
           python --version
           python -c "import torch; print('PyTorch:', torch.__version__)"
           python -c "import torch; print('CUDA:', torch.version.cuda)"
