@@ -1,0 +1,113 @@
+name: Build wheels and upload to GitHub Releases
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  create_releases:
+    name: Create Releases
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --notes "TBD"
+
+  # #########################################################
+  # Linux
+  # #########################################################
+  build_wheels_linux:
+    name: Build Linux
+    needs: create_releases
+    strategy:
+      fail-fast: false
+      matrix:
+        flash-attn-version: ["2.8.3"]
+        python-version: ["3.12"]
+        torch-version: ["2.9.0.dev20250903+cu130"]
+        # https://developer.nvidia.com/cuda-toolkit-archive
+        cuda-version: ["13.0.0"]
+    uses: ./.github/workflows/build_linux.yml
+    with:
+      flash-attn-version: ${{ matrix.flash-attn-version }}
+      python-version: ${{ matrix.python-version }}
+      torch-version: ${{ matrix.torch-version }}
+      cuda-version: ${{ matrix.cuda-version }}
+    secrets: inherit
+
+  # #########################################################
+  # Windows
+  # #########################################################
+  build_wheels_windows:
+    name: Build Windows
+    needs: create_releases
+    strategy:
+      fail-fast: false
+      matrix:
+        flash-attn-version: ["2.8.2"]
+        python-version: ["3.13"]
+        torch-version: ["2.6.0", "2.7.1", "2.8.0"]
+        # https://developer.nvidia.com/cuda-toolkit-archive
+        cuda-version: ["12.4.1", "12.6.3", "12.8.1", "12.9.1"]
+        exclude:
+          # torch < 2.2 does not support Python 3.12
+          - python-version: "3.12"
+            torch-version: "2.0.1"
+          - python-version: "3.12"
+            torch-version: "2.1.2"
+          # torch 2.0.1 does not support CUDA 12.x
+          - torch-version: "2.0.1"
+            cuda-version: "12.1.1"
+          - torch-version: "2.0.1"
+            cuda-version: "12.4.1"
+          - torch-version: "2.0.1"
+            cuda-version: "12.6.3"
+          - torch-version: "2.0.1"
+            cuda-version: "12.8.1"
+          # torch 2.6.0 does not support CUDA 12.1
+          - torch-version: "2.6.0"
+            cuda-version: "12.1.1"
+          # torch 2.7.0 does not support CUDA 12.4
+          - torch-version: "2.7.0"
+            cuda-version: "12.4.1"
+          # torch < 2.8 does not support CUDA 12.9
+          - torch-version: "2.5.1"
+            cuda-version: "12.9.1"
+          - torch-version: "2.6.3"
+            cuda-version: "12.9.1"
+          - torch-version: "2.7.1"
+            cuda-version: "12.9.1"
+    uses: ./.github/workflows/build_windows.yml
+    with:
+      flash-attn-version: ${{ matrix.flash-attn-version }}
+      python-version: ${{ matrix.python-version }}
+      torch-version: ${{ matrix.torch-version }}
+      cuda-version: ${{ matrix.cuda-version }}
+    secrets: inherit
+
+  update_release_notes:
+    name: Update Release Notes
+    needs:
+      [build_wheels_linux, build_wheels_windows]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.12
+
+      - name: Generate Release Notes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "${{ github.ref_name }}" --json assets > /tmp/assets.json
+          python create_release_note.py /tmp/assets.json > /tmp/release_notes.md
+          gh release edit "${{ github.ref_name }}" --notes-file /tmp/release_notes.md
