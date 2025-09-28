@@ -115,11 +115,18 @@ jobs:
             # Hard-coding this version of pytorch-triton for torch 2.9.0.dev20250904 and 2.10.0.dev20250927
             pip install jinja2
             if [[ ${{ inputs.torch-version }} == *"2.10.0"* ]]; then
-              TRITON_URL=https://download.pytorch.org/whl/nightly/pytorch_triton-3.5.0%2Bgit4afe9629-cp${MATRIX_PYTHON_VERSION}-cp${MATRIX_PYTHON_VERSION}-${PLAT}.whl
+              TRITON_URL=https://download.pytorch.org/whl/nightly/pytorch_triton-3.5.0%2Bgitfccfc522-cp${MATRIX_PYTHON_VERSION}-cp${MATRIX_PYTHON_VERSION}-${PLAT}.whl
             else
               TRITON_URL=https://download.pytorch.org/whl/nightly/pytorch_triton-3.4.0%2Bgitf7888497-cp${MATRIX_PYTHON_VERSION}-cp${MATRIX_PYTHON_VERSION}-${PLAT}.whl
             fi
-            TORCH_URL=https://download.pytorch.org/whl/nightly/cu${TORCH_CUDA_VERSION}/torch-${{ inputs.torch-version }}%2Bcu${TORCH_CUDA_VERSION}-cp${MATRIX_PYTHON_VERSION}-cp${MATRIX_PYTHON_VERSION}-manylinux_2_28_$(uname -m).whl
+            # Check if torch version already has CUDA suffix, if not add it
+            # URL encode the version by replacing + with %2B
+            TORCH_VERSION_ENCODED=$(echo "${{ inputs.torch-version }}" | sed 's/+/%2B/g')
+            if [[ ${{ inputs.torch-version }} == *"+cu"* ]]; then
+              TORCH_URL=https://download.pytorch.org/whl/nightly/cu${TORCH_CUDA_VERSION}/torch-${TORCH_VERSION_ENCODED}-cp${MATRIX_PYTHON_VERSION}-cp${MATRIX_PYTHON_VERSION}-manylinux_2_28_$(uname -m).whl
+            else
+              TORCH_URL=https://download.pytorch.org/whl/nightly/cu${TORCH_CUDA_VERSION}/torch-${TORCH_VERSION_ENCODED}%2Bcu${TORCH_CUDA_VERSION}-cp${MATRIX_PYTHON_VERSION}-cp${MATRIX_PYTHON_VERSION}-manylinux_2_28_$(uname -m).whl
+            fi
             pip install --no-cache-dir --pre "${TRITON_URL}"
             pip install --no-cache-dir --pre "${TORCH_URL}"
           else
