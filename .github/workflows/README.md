@@ -15,7 +15,7 @@ This workflow builds Flash Attention wheels specifically for PyTorch 2.9.0 devel
    - Select "Build PyTorch 2.9.0 + CUDA 13.0 wheel" from the workflow list
    - Click "Run workflow" button
    - Fill in the parameters (or use defaults):
-     - **runs-on**: Runner type (default: `ubuntu-22.04`)
+     - **runs-on**: Runner type (default: `ubuntu-24.04`)
      - **python-version**: Python version (default: `3.12`)
      - **cuda-version**: CUDA version (default: `13.0.0`)
      - **torch-version**: PyTorch version (default: `2.9.0.dev`)
@@ -27,7 +27,7 @@ This workflow builds Flash Attention wheels specifically for PyTorch 2.9.0 devel
 2. **Via GitHub CLI:**
    ```bash
    gh workflow run "Build PyTorch 2.9.0 + CUDA 13.0 wheel" \
-     --field runs-on=ubuntu-22.04 \
+     --field runs-on=ubuntu-24.04 \
      --field python-version=3.12 \
      --field cuda-version=13.0.0 \
      --field torch-version=2.9.0.dev \
@@ -43,7 +43,7 @@ This workflow builds Flash Attention wheels specifically for PyTorch 2.9.0 devel
      -d '{
        "ref": "main",
        "inputs": {
-         "runs-on": "ubuntu-22.04",
+         "runs-on": "ubuntu-24.04",
          "python-version": "3.12",
          "cuda-version": "13.0.0",
          "torch-version": "2.9.0.dev",
